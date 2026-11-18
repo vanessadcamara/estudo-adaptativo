@@ -3,59 +3,100 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Estudo Adaptativo • Banco do Brasil</title>
+  <meta name="theme-color" content="#f7f8fc" />
+  <title>Estudo Adaptativo BB · Revisão inteligente</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <main class="shell">
+  <div class="shell">
     <header class="header">
-      <div><div class="eyebrow">SEU PLANO DE ESTUDOS</div><h1>Estudo Adaptativo <span>BB</span></h1>
-        <p>Revisão inteligente, caderno de erros e progresso que não se perde.</p></div>
-      <div class="account-actions"><span id="accountName" class="pill" aria-label="Conta conectada">Minha conta</span><button id="logoutBtn" class="outline" type="button">Sair</button></div>
+      <div class="brand"><span class="brand-icon" aria-hidden="true">✦</span><div><span class="eyebrow">CADERNO DE ESTUDOS</span><h1>Estudo Adaptativo <span>BB</span></h1></div></div>
+      <div class="account-actions"><span id="accountName" class="account-badge">Minha conta</span><button id="logoutBtn" class="button subtle small" type="button">Sair</button></div>
     </header>
-    <section id="message" class="message" role="status" aria-live="polite" hidden></section>
-    <div id="sessionBadge" class="pill session-pill">Nenhuma sessão aberta</div>
-    <div class="stats" id="stats"></div>
-    <section class="panel agenda">
-      <div><h2>Seu estudo de hoje</h2><p>Ritmo sugerido: duas horas, sem cobrança por dias de pausa.</p></div>
-      <div class="time-blocks"><div><strong>60 min</strong><small>Revisão</small></div><div><strong>60 min</strong><small>Conteúdo novo</small></div></div>
-      <div class="actions"><button id="startBtn" class="primary">Iniciar / retomar sessão</button><button id="refreshBtn" class="outline" disabled>↻ Refresh e finalizar</button></div>
-    </section>
-    <div class="two-col">
-      <section class="panel">
-        <div class="section-head"><div><h2>Fila A · Explicar sem consulta</h2><p>40 minutos sugeridos · notas de recuperação de 0 a 4</p></div><span class="emoji">🧠</span></div>
-        <div id="topicQueue" class="queue"></div>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+    <nav class="tabs" role="tablist" aria-label="Áreas do sistema">
+      <button class="tab active" type="button" role="tab" aria-selected="true" aria-controls="tab-cards" id="tab-button-cards" data-tab="cards">Cards</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-errors" id="tab-button-errors" data-tab="errors">Caderno de erros</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-settings" id="tab-button-settings" data-tab="settings">Configurações</button>
+    </nav>
+
+    <main>
+      <section id="tab-cards" role="tabpanel" aria-labelledby="tab-button-cards" class="tab-panel">
+        <div class="section-title"><div><div class="eyebrow">PILHA ADAPTATIVA</div><h2>Cards de revisão</h2><p>Todos os assuntos continuam na pilha. Você escolhe quando revisar.</p></div></div>
+        <div class="toolbar">
+          <label class="field filter-field">Matéria<select id="cardsSubject" aria-label="Filtrar cards por matéria"></select></label>
+          <button class="button outline refresh-button" id="cardsRefresh" type="button">↻ Atualizar prioridades</button>
+        </div>
+        <div id="topicStudyCard" class="study-region" aria-live="polite"></div>
+        <p class="helper-note">Pular um assunto não conta como erro. O refresh reorganiza toda a pilha, sem reiniciar seu histórico.</p>
       </section>
-      <section class="panel">
-        <div class="section-head"><div><h2>Fila B · Caderno de erros</h2><p>20 minutos sugeridos · maior prioridade para erros recorrentes</p></div><span class="emoji">📝</span></div>
-        <div id="questionQueue" class="queue"></div>
+
+      <section id="tab-errors" role="tabpanel" aria-labelledby="tab-button-errors" class="tab-panel" hidden>
+        <div class="section-title"><div><div class="eyebrow">PILHA ADAPTATIVA</div><h2>Caderno de erros</h2><p>Os links são reordenados conforme seus erros, acertos, confiança e tempo sem revisitar.</p></div></div>
+        <div class="toolbar">
+          <label class="field filter-field">Matéria<select id="errorsSubject" aria-label="Filtrar questões por matéria"></select></label>
+          <button class="button outline refresh-button" id="errorsRefresh" type="button">↻ Atualizar prioridades</button>
+        </div>
+        <div id="questionStudyCard" class="study-region" aria-live="polite"></div>
+        <div class="navigator" aria-label="Navegação entre questões">
+          <button id="questionPrevious" type="button" class="button outline">← Anterior</button>
+          <span id="questionPosition" aria-live="polite">—</span>
+          <button id="questionNext" type="button" class="button primary">Próxima →</button>
+        </div>
+        <p class="helper-note">Acertos por chute não significam domínio. Questões consolidadas podem ser retiradas da pilha, sem apagar suas tentativas.</p>
       </section>
-    </div>
-    <section class="panel">
-      <h2>Conteúdo novo · 60 min</h2><p>Após a videoaula, registre o tópico. Ele entra na fila de revisões sem exigir nota agora.</p>
-      <form id="newContentForm" class="inline-form"><label>Tópico <select id="studyTopic" required></select></label>
-        <label>Minutos <input id="studyMinutes" type="number" min="1" max="180" value="60" required /></label>
-        <button class="secondary" type="submit">Registrar estudo</button></form>
-    </section>
-    <div class="two-col">
-      <section class="panel"><h2>Cadastrar matéria e tópico</h2><p>Ex.: Conhecimentos Bancários → A1 · Sistema Financeiro Nacional.</p>
-        <form id="subjectForm" class="stack-form"><label>Matéria <input id="subjectName" placeholder="Conhecimentos Bancários" maxlength="120" required /></label><button type="submit" class="secondary">Adicionar matéria</button></form>
-        <form id="topicForm" class="stack-form bordered"><label>Matéria <select id="subjectSelect" required></select></label>
-          <div class="inline-form"><label>Código (opcional) <input id="topicCode" maxlength="30" placeholder="A1" /></label><label>Importância (1–5) <input id="topicImportance" type="number" min="1" max="5" value="3" required /></label></div>
-          <label>Nome do tópico <input id="topicTitle" placeholder="Sistema Financeiro Nacional" maxlength="240" required /></label>
-          <button type="submit" class="secondary">Adicionar tópico</button></form>
+
+      <section id="tab-settings" role="tabpanel" aria-labelledby="tab-button-settings" class="tab-panel" hidden>
+        <div class="section-title"><div><div class="eyebrow">GERENCIE SEUS CONTEÚDOS</div><h2>Configurações</h2><p>Cadastros de cards e do caderno de erros ficam separados.</p></div></div>
+        <nav class="subtabs" role="tablist" aria-label="Configurações de estudo">
+          <button class="subtab active" id="settings-button-cards" data-settings-tab="cards" type="button" role="tab" aria-selected="true" aria-controls="settings-cards">Cards</button>
+          <button class="subtab" id="settings-button-errors" data-settings-tab="errors" type="button" role="tab" aria-selected="false" aria-controls="settings-errors">Caderno de erros</button>
+        </nav>
+        <div id="settings-cards" role="tabpanel" aria-labelledby="settings-button-cards">
+          <div class="settings-grid">
+            <section class="panel">
+              <div class="panel-heading"><div><h3>Matérias</h3><p>Cadastre as disciplinas do seu edital, sem depender dos tópicos.</p></div></div>
+              <form id="subjectForm" class="form-stack"><label class="field">Nome da matéria<input id="subjectName" maxlength="120" placeholder="Ex.: Conhecimentos Bancários" required /></label><button class="button secondary" type="submit">Adicionar matéria</button></form>
+              <div id="subjectsList" class="registered-list" aria-live="polite"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div><h3>Assuntos</h3><p>Cada assunto pertence a uma matéria e entra automaticamente na pilha de Cards.</p></div></div>
+              <form id="topicForm" class="form-stack">
+                <label class="field">Matéria<select id="subjectSelect" required></select></label>
+                <label class="field">Nome do assunto<input id="topicTitle" maxlength="240" placeholder="Ex.: Sistema Financeiro Nacional" required /></label>
+                <div class="form-split">
+                  <label class="field">Código (opcional)<input id="topicCode" maxlength="30" placeholder="A1" /></label>
+                  <label class="field">Importância<select id="topicImportance"><option value="1">1 · Baixa</option><option value="2">2 · Menor</option><option value="3" selected>3 · Normal</option><option value="4">4 · Alta</option><option value="5">5 · Muito alta</option></select></label>
+                </div>
+                <button class="button secondary" type="submit">Cadastrar assunto</button>
+              </form>
+              <div id="topicsList" class="registered-list" aria-live="polite"></div>
+            </section>
+          </div>
+        </div>
+        <div id="settings-errors" role="tabpanel" aria-labelledby="settings-button-errors" hidden>
+          <div class="settings-grid">
+            <section class="panel">
+              <div class="panel-heading"><div><h3>Adicionar questão errada</h3><p>Um único cadastro por link, sem tags obrigatórias.</p></div></div>
+              <form id="questionForm" class="form-stack">
+                <label class="field">Matéria<select id="questionSubject" required></select></label>
+                <label class="field">Link da questão<input id="questionUrl" type="url" placeholder="https://..." /></label>
+                <label class="field">Enunciado (se não houver link)<textarea id="questionText" rows="3" placeholder="Cole a questão aqui, se preferir..."></textarea></label>
+                <label class="field">Assunto relacionado (opcional)<select id="questionTopic"></select></label>
+                <button class="button secondary" type="submit">Adicionar ao caderno</button>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div><h3>Gerenciar links</h3><p>Arquive links dominados ou restaure-os quando quiser. O histórico é preservado.</p></div></div>
+              <label class="field management-filter">Exibir<select id="manageQuestionsFilter"><option value="active">Questões na pilha</option><option value="archived">Questões arquivadas</option></select></label>
+              <div id="managedQuestionsList" class="registered-list" aria-live="polite"></div>
+            </section>
+          </div>
+        </div>
       </section>
-      <section class="panel"><h2>Adicionar questão errada</h2><p>Basta colar o link. Se a plataforma exigir login, você também pode colar o enunciado.</p>
-        <form id="questionForm" class="stack-form"><label>Link <input id="questionUrl" type="url" placeholder="https://..." /></label>
-          <label>Enunciado (opcional) <textarea id="questionText" rows="3" placeholder="Cole aqui, se preferir..."></textarea></label>
-          <label>Associar a tópico (opcional) <select id="questionTopic"></select></label>
-          <button type="submit" class="secondary">Guardar no caderno</button></form>
-        <p class="hint">Sem etiquetas obrigatórias. Não buscamos conteúdo em sites protegidos por login.</p>
-      </section>
-    </div>
-    <section class="panel"><h2>Como funciona o refresh?</h2><p>Encerra o lote atual, salva as avaliações realizadas e recalcula as prioridades. Se você ficar uma semana sem revisar, o sistema usa o tempo transcorrido quando retornar — sem registrar faltas, sem zerar progresso e sem penalizar o que não coube na sessão.</p><div id="lastSummary" class="summary"></div></section>
-    <footer>Seus estudos ficam armazenados no PostgreSQL · Acesso protegido por login</footer>
-  </main>
-  <script src="/static/app.js" defer></script>
+    </main>
+    <footer>Histórico preservado no PostgreSQL · Revisão adaptativa contínua</footer>
+  </div>
 </body>
 </html>

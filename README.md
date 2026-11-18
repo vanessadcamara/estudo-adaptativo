@@ -1,79 +1,62 @@
-# Estudo Adaptativo · Banco do Brasil (Agente Comercial)
+# Estudo Adaptativo BB — versão 0.4
 
-Aplicação web pessoal para **revisão inteligente por duas filas**, caderno de erros e registro de conteúdo novo, com histórico persistido no **PostgreSQL**. Interface em português entregue pelo próprio FastAPI, com login, e API protegida. Pode ser executada localmente ou no Render, usando PostgreSQL local ou Neon.
+Sistema pessoal de revisão adaptativa para **Banco do Brasil — Escriturário (Agente Comercial)**. A interface tem **três abas**: Cards, Caderno de erros e Configurações. Sem cronômetro, sem cotas diárias e sem calendário obrigatório.
 
-> **Privacidade:** credenciais são variáveis de ambiente, não arquivos versionados. Não publique `.env`, connection string, senha nem hash de senha. Os registros ficam no banco que você configurar. Recomenda-se repositório privado.
+A aplicação entrega o frontend pelo próprio **FastAPI** e persiste revisões, tentativas e sessões no **PostgreSQL** (local ou Neon). Login com senha Argon2, sessão protegida por cookie e controle CSRF.
 
-## Como funciona
+## O que mudou na v0.4
 
-**Duas horas de estudo, como referência (configurável):**
-- **60 min de revisão**: Fila A (40 min para explicação sem consulta) + Fila B (20 min para questões do caderno de erros).
-- **60 min de conteúdo novo**: assistir à aula, cadastrar o tópico e registrar o tempo. Isso não cria uma nota fictícia.
+- **Sem banner grande, ícones decorativos ou indicadores de “rodada do dia”.** A pilha de Cards considera **todos os assuntos** da matéria selecionada, em ordem dinâmica de prioridade.
+- **Caderno de erros como pilha adaptativa:** questões únicas por link; ordenação por histórico de erros, acertos, confiança, tempo transcorrido e necessidade de cobertura. Filtros por matéria e navegação Anterior/Próxima.
+- **Sugestão de arquivamento reversível:** após pelo menos seis tentativas, com quatro acertos seguros consecutivos espalhados por pelo menos 14 dias e acurácia de 80% ou mais. O sistema **nunca arquiva automaticamente**. É possível retirar manualmente da pilha ou restaurar um link em Configurações sem apagar as tentativas.
+- **Configurações com duas subabas:** *Cards* (cartões separados para Matérias e Assuntos) e *Caderno de erros* (cadastro de link e gerenciamento de links ativos/arquivados).
+- **Registrar conteúdo novo removido da interface.** Um assunto cadastrado sem avaliações já é tratado como novo. A API legada de registro de aula foi preservada apenas por compatibilidade.
+- **Refresh** está nas duas pilhas e consolida as avaliações desde a última atualização, depois recalcula a ordenação integral. Pode ser acionado a qualquer momento. Não representa o fim do dia nem reinicia o histórico.
 
-**Fila A: tópicos de revisão.** Avalie sua recuperação: `0` não lembrou; `1` lembrou fragmentos; `2` recuperação parcial com erros; `3` boa com pequenas lacunas; `4` excelente sem consulta. Prioridade: `0,35×dificuldade + 0,30×urgência + 0,25×histórico de lacunas + 0,10×importância`. Os fatores são normalizados de 0 a 1.
+A especificação de interface, formulários e algoritmo fica em [`docs/ESPECIFICACAO_FUNCIONAL.md`](docs/ESPECIFICACAO_FUNCIONAL.md).
 
-**Fila B: questões.** Cadastre apenas a URL da questão errada. Se o site exigir login, pode colar o enunciado e as alternativas (API). Não há tags obrigatórias. O sistema prioriza frequência de erros, tentativas recentes e incerteza (suavização por Laplace para não superestimar domínio com um único acerto). **O sistema não acessa automaticamente questões protegidas por login e não classifica o link por IA nesta primeira versão.** A associação ao tópico é opcional.
+## Arquitetura
 
-**Refresh:** fecha a sessão, consolida apenas respostas efetivamente registradas, mantém todas as tentativas e retorna as estatísticas. Na próxima sessão as filas são recalculadas. Dias sem estudar, mesmo após **uma semana ou mais**, não são registrados como faltas. Tópicos e questões não revisados não recebem notas artificiais. A urgência cresce conforme os dias efetivos desde a última revisão, e o limite de manutenção é de **60 dias**. Itens ainda não vencidos só aparecem se houver espaço na fila.
-
-**Domínio:** exige no mínimo três recuperações seguidas com nota 4, em intervalos crescentes (último de ao menos 14 dias), e desempenho de pelo menos 85% na última tentativa de cinco questões diferentes do tópico, com no mínimo oito tentativas no histórico. Mesmo consolidado, o tópico continua em manutenção.
-
-## Hospedagem Render + Neon (planos gratuitos)
-
-A arquitetura é **navegador → Render (HTML/JS + FastAPI) → Neon (PostgreSQL)**. Não precisa hospedar o frontend separadamente. O `render.yaml` define um serviço gratuito, e o login protege as rotas e os dados antes de expor a aplicação à internet.
-
-### 1. Criar o banco Neon
-
-1. No painel [Neon](https://console.neon.tech/), crie um projeto PostgreSQL. Guarde a conexão do tipo **Direct connection** (sem `-pooler`, recomendada aqui por usar conexões persistentes SQLAlchemy). Não compartilhe a senha da conexão.
-2. Copie a connection string com `?sslmode=require`. Neon normalmente apresenta `postgresql://...`: nosso código converte automaticamente para `postgresql+psycopg://...` (driver psycopg 3).
-3. Mantenha o banco na nuvem como **única fonte do histórico**. Não use uma URL de PostgreSQL local (`localhost`) no Render.
-
-### 2. Gerar credenciais de acesso ao sistema
-
-Na máquina com o código e as dependências instaladas, execute:
-
-```powershell
-python -m pip install -e .
-python -m app.auth hash-password
+```text
+Navegador ── HTTPS ── Render (FastAPI + HTML/CSS/JS)
+                          │
+                          └── Neon (PostgreSQL)
 ```
 
-Informe e confirme **uma senha longa com pelo menos 12 caracteres**. O utilitário imprimirá `ADMIN_PASSWORD_HASH=...`. Copie somente o hash para o painel privado do Render. A senha em si não deve entrar no GitHub. Você também define um nome de usuário particular em `ADMIN_USERNAME`.
+O próprio FastAPI serve os arquivos em `app/static`. A aplicação funciona com SQLAlchemy e migrações Alembic. **Nenhuma senha deve ser salva no repositório.**
 
-`APP_SECRET_KEY` será gerado automaticamente pelo Render no primeiro deploy do Blueprint. Ele é usado para criar a proteção CSRF da sessão; mantenha-o estável.
+## Atualizar o projeto já publicado no Render
 
-### 3. Publicar no Render
+1. Extraia o ZIP desta versão. Copie os arquivos para a pasta do repositório Git existente, preservando a pasta oculta `.git` e seu arquivo `.env` local.
+2. No terminal, dentro da pasta, execute:
 
-1. Faça commit dos arquivos desta versão no repositório GitHub (incluindo `render.yaml`, `.python-version`, `migrations/` e `app/static/`; **sem** `.env`).
-2. No [Render Dashboard](https://dashboard.render.com/), entre em **New → Blueprint** e escolha o repositório. O Render reconhecerá `render.yaml`.
-3. Selecione o plano `Free` e informe as variáveis solicitadas pelo Blueprint, todas no painel privado:
+   ```powershell
+   git status
+   git add -A
+   git commit -m "feat: pilhas continuas e arquivamento inteligente"
+   git push origin master
+   ```
+3. O serviço `estudo-adaptativo-bb`, já conectado à branch **master**, deve detectar o push e começar o deploy. Acompanhe o status no [Render Dashboard](https://dashboard.render.com/web/srv-dbunfkpsrm7s73feeqrg).
+4. O `startCommand` existente (`alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`) aplica automaticamente a migração **0004**, que adiciona `questions.archived_at` sem apagar dados.
+5. Quando estiver `Live`, acesse [a aplicação](https://estudo-adaptativo-bb.onrender.com/) e teste o login e as duas filas.
 
-| Variável | Conteúdo |
+**Não** crie um novo banco ou serviço no Render para atualizar esse projeto. Use o Neon e serviço atuais. Antes de uma alteração em produção, faça backup dos dados importantes; não execute `alembic downgrade base`.
+
+### Variáveis de ambiente do Render
+
+| Nome | Valor |
 |---|---|
-| `DATABASE_URL` | URL do Neon (com `sslmode=require`) |
+| `APP_ENV` | `production` |
+| `DATABASE_URL` | Connection string do Neon (com SSL), guardada no painel privado |
 | `ADMIN_USERNAME` | Nome de usuário escolhido |
-| `ADMIN_PASSWORD_HASH` | Hash Argon2 gerado pelo comando acima |
-| `APP_ENV` | `production` (definido em `render.yaml`) |
-| `APP_SECRET_KEY` | Gerado automaticamente pelo Render |
+| `ADMIN_PASSWORD_HASH` | Hash Argon2 gerado com `python -m app.auth hash-password` |
+| `APP_SECRET_KEY` | Chave secreta longa e estável, configurada no painel privado |
 
-4. O build executa `pip install .` e o start executa `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`. A migração cria a tabela de sessões autenticadas sem remover as tabelas ou o histórico de estudo.
-5. Quando o serviço estiver `Live`, abra a URL HTTPS `https://<nome-do-serviço>.onrender.com` exibida no painel. Entre com seu usuário e senha e cadastre uma matéria para testar a persistência.
+Se você já cadastrou essas variáveis, **não as substitua** durante a atualização. Nunca compartilhe `DATABASE_URL`, a senha do banco, o hash da senha nem `APP_SECRET_KEY` em commits ou capturas de tela.
 
-**Atenção:** não use `alembic downgrade base` com dados reais. Se você já tiver estudado no PostgreSQL local, o Neon começará vazio. A migração do histórico local para a nuvem precisa ser feita separadamente, com backup e importação de dados.
+## Executar localmente (PowerShell)
 
-**Limites gratuitos:** o Render pode suspender o serviço quando inativo, gerando uma espera na próxima visita. Os limites/planos podem mudar. A aplicação e o Neon precisam estar ativos para acessar os dados; o GitHub sozinho não é deploy.
-
-### Segurança em produção
-
-- Uma única conta administradora (`ADMIN_USERNAME` + hash Argon2 da senha).
-- Sessão de login revogável em tabela separada (somente hash SHA-256 do token). Cookie `HttpOnly`, `Secure` em produção, `SameSite=Strict`, validade de 7 dias.
-- `X-CSRF-Token` obrigatório para todas as alterações. API e painel só acessíveis com login.
-- Limitação de tentativas de login por IP/processo, cabeçalhos de segurança e documentação de API desabilitada em produção.
-- **Não há recuperação automática de senha por e-mail:** para redefinir a senha, gere outro hash e atualize `ADMIN_PASSWORD_HASH` no Render. Sessões anteriores continuarão válidas até expirar ou serem encerradas; para invalidar todas, altere `APP_SECRET_KEY` **e** revogue/apague as sessões em `auth_sessions` com orientação técnica apropriada (a chave por si só não invalida a sessão salva).
-- Para um projeto pessoal é uma camada inicial de proteção; login limita acesso, mas não substitui backups, atualização de dependências e monitoramento de logs.
-
-## Instalar no Windows (PowerShell)
-
-Pré-requisitos: **Python 3.11+** e **PostgreSQL local** instalado/rodando.
+Pré-requisitos: Python 3.11+, PostgreSQL e Git.
 
 ```powershell
 git clone https://github.com/vanessadcamara/estudo-adaptativo.git
@@ -86,48 +69,45 @@ python -m app.auth hash-password
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Crie um banco vazio no PostgreSQL, por exemplo usando `psql`:
-
-```sql
-CREATE DATABASE estudo_bb;
-```
-
-Abra **`.env` somente na sua máquina** e substitua `usuario`, `senha`, host/porta e banco na `DATABASE_URL`. Preencha também `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH` (resultado do primeiro comando) e `APP_SECRET_KEY` (resultado do segundo comando). Se sua senha contiver caracteres reservados (como `@`, `:`, `/`), use codificação URL (percent-encoding). Nunca envie `.env` para o GitHub.
-
-Depois:
+Preencha **somente no `.env` local** a URL de PostgreSQL, o usuário, o hash de sua senha e a chave secreta. O arquivo `.env` está no `.gitignore`.
 
 ```powershell
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-Acesse **http://127.0.0.1:8000** e entre com seu usuário e senha. A documentação interativa da API ficará em **http://127.0.0.1:8000/docs** apenas fora de produção.
+Acesse http://127.0.0.1:8000/ e faça login. A documentação da API em `/docs` existe somente fora do ambiente `production`.
 
-Se o PowerShell bloquear `Activate.ps1`, use diretamente `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` e `.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload`; no lugar de `alembic`, use `.\.venv\Scripts\python.exe -m alembic upgrade head`.
+## Como as pilhas funcionam
 
-## Fluxo de uso
+**Cards:** todos os assuntos cadastrados fazem parte do conjunto de revisão da matéria, inclusive os não vencidos. O algoritmo pondera recuperação (nota 0–4), dificuldade percebida, lacunas, importância, cobertura histórica e tempo real desde a última revisão. O estado "novo" é inferido pela ausência de avaliações.
 
-1. Crie matérias (Conhecimentos Bancários, Português, Informática etc.) e tópicos (A1, A2...); matérias não precisam conter os tópicos do edital inteiro inicialmente.
-2. Guarde links das questões erradas, com ou sem associação manual ao tópico.
-3. Inicie ou retome uma sessão. A fila se atualiza ao abrir. Registre suas recuperações e tentativas; o mesmo item aparece apenas uma vez por sessão.
-4. Registre seu tempo de conteúdo novo. Clique em **Refresh e finalizar** ao encerrar o lote.
-5. Na próxima sessão, o sistema leva em conta o histórico e o tempo transcorrido desde a revisão anterior, não um calendário fixo.
+**Caderno de erros:** cada URL é única. As tentativas consideradas no cálculo incluem acerto/erro e nível de confiança (chute, dúvida ou segurança); erros recorrentes e maior tempo desde a última tentativa elevam a prioridade. Acertos seguros repetidos espaçam revisões. Arquivar tira da pilha ativa, mas mantém os dados e permite restaurar.
+
+**Refresh:** encerra o lote técnico em aberto para permitir nova avaliação de um item no lote seguinte; **não tem duração e não é um dia de estudo**. O histórico e os últimos feedbacks permanecem no PostgreSQL. Pular ou deixar de estudar não equivale a errar.
 
 ## Rotas principais
 
-| Método | Endpoint | Ação |
+| Método | Caminho | Função |
 |---|---|---|
-| `POST` | `/api/subjects`, `/api/topics`, `/api/questions` | Cadastrar matéria, tópico ou questão |
-| `GET` | `/api/dashboard`, `/api/queue` | Histórico resumido e prévia das filas |
-| `POST` | `/api/sessions` | Iniciar ou retomar a sessão aberta |
-| `GET` | `/api/sessions/open` | Recuperar a sessão em andamento |
-| `GET` | `/api/sessions/{id}/queue` | Fila da sessão sem itens já feitos nela |
-| `POST` | `/api/sessions/{id}/topic-reviews` | Registrar nota de 0 a 4 |
-| `POST` | `/api/sessions/{id}/question-attempts` | Registrar acerto ou erro |
-| `POST` | `/api/sessions/{id}/new-content` | Registrar aula/conteúdo novo |
-| `POST` | `/api/sessions/{id}/refresh` | Fechar sessão e consolidar histórico |
+| `GET/POST` | `/api/subjects` | Listar / cadastrar matérias |
+| `GET/POST` | `/api/topics` | Listar / cadastrar assuntos |
+| `GET/POST` | `/api/questions` | Listar / cadastrar questões (GET aceita `include_archived=true`) |
+| `PATCH` | `/api/questions/{id}/archive` | `{"archived":true}` retira; `false` restaura |
+| `GET` | `/api/queue` | Pilhas completas, ordenadas e sem limite diário |
+| `POST` | `/api/sessions` | Reutilizar ou abrir lote técnico de avaliações |
+| `GET` | `/api/sessions/{id}/progress` | Itens avaliados no lote atual |
+| `POST` | `/api/sessions/{id}/topic-reviews` | Nota 0–4, esforço e lacunas |
+| `POST` | `/api/sessions/{id}/question-attempts` | Acerto, confiança e tipo de erro |
+| `POST` | `/api/sessions/{id}/refresh` | Consolidar sem apagar histórico e reabrir a pilha |
 
-Para personalizar o tempo da fila use `GET /api/queue?topic_minutes=40&question_minutes=20`. Cada tópico ocupa 10 min estimados e cada questão ocupa 5 min estimados (primeira versão).
+As rotas do caderno exigem login e token CSRF para operações de escrita. A API `POST /api/sessions/{id}/new-content` permanece disponível para compatibilidade, mas **não aparece na interface**.
+
+## Segurança e limitações
+
+Esta é uma aplicação pessoal com uma conta administradora. Cookie `HttpOnly`, `Secure` em produção, `SameSite=Strict`; proteção CSRF e limitação simples de tentativas de login. Não há recuperação de senha por e-mail ou múltiplos usuários. A limitação de tentativas é em memória por instância e não substitui um rate limiter dedicado em escala. Faça backup do Neon conforme seu nível de risco.
+
+O Render Free pode suspender serviços ociosos; consulte o painel para os limites vigentes. O sistema não acessa automaticamente o conteúdo de questões em plataformas que exigem login.
 
 ## Testes
 
@@ -135,27 +115,4 @@ Para personalizar o tempo da fila use `GET /api/queue?topic_minutes=40&question_
 python -m pytest -q
 ```
 
-A suíte usa SQLite **somente nos testes automatizados** (em memória, sem afetar seu PostgreSQL), incluindo: autenticação, CSRF, logout e expiração de sessão, histórico preservado, duplicidade no mesmo lote, link inválido, conteúdo novo sem nota e retorno depois de sete dias.
-
-## Estrutura
-
-```text
-app/
-  main.py            API FastAPI
-  engine.py          Regras de priorização e manutenção
-  models.py          Tabelas persistidas
-  schemas.py         Validação
-  db.py              Conexão PostgreSQL local ou Neon via .env
-  auth.py            Login, Argon2, sessões e CSRF
-  static/             Interface HTML, CSS e JS
-migrations/           Versão inicial do esquema (Alembic)
-tests/                Testes de API e algoritmo
-```
-
-### Limitações desta versão
-
-- O backend deve rodar em um computador/servidor com acesso ao PostgreSQL. **O GitHub não acessa o banco da sua máquina.**
-- A autenticação protege uma conta pessoal. Não há cadastro de múltiplas contas nem recuperação por e-mail. Utilize HTTPS quando publicar.
-- A associação automática do conceito de uma questão por IA, a geração de questões equivalentes e a importação de questões de plataformas fechadas **não estão implementadas**.
-- O controle da hora de conteúdo novo é registro de estudo, não um temporizador. As estimativas de 40/20/60 min são referências, não bloqueios.
-- Não execute `alembic downgrade base` com histórico real: a operação remove as tabelas e os dados.
+São **20 testes** para autenticação, CSRF, preservação de histórico, filas completas, feedback e intervalos, arquivamento/restauração, sugestão conservadora e estrutura da interface. Os testes usam SQLite em memória; produção usa PostgreSQL. Migração **0004** é necessária para bancos existentes.

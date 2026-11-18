@@ -1,4 +1,8 @@
-"""Cálculo adaptativo, orientado por eventos reais (sem punição por dias sem estudo)."""
+"""Filas adaptativas: eventos reais, manutenção espaçada e cobertura completa.
+
+Nunca cria faltas, notas, tentativas ou cronômetros para itens que não foram avaliados.
+Atualiza prioridade com o tempo transcorrido, mesmo após semanas sem estudar.
+"""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,7 +14,6 @@ from app.models import NewContentLog, Question, QuestionAttempt, Topic, TopicRev
 
 
 def aware(dt: datetime) -> datetime:
-    """SQLite em testes pode devolver datetime sem fuso; PostgreSQL preserva o fuso."""
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
@@ -21,108 +24,162 @@ def elapsed_days(then: datetime | None, now: datetime) -> float | None:
 def grade4_streak(records: list[TopicReview]) -> int:
     count = 0
     for record in reversed(records):
-        if record.grade != 4:
+        if record.grade != 4 or getattr(record, 'critical_gap', False):
             break
         count += 1
     return count
 
 
 def topic_interval(records: list[TopicReview]) -> int:
-    """Intervalos de 1 a 60 dias. Acertos não extinguem o tópico."""
+    """Revisão após 1–60 dias; não elimina tópicos consolidados."""
     if not records:
         return 1
-    grade = records[-1].grade
-    if grade <= 2:
-        return (1, 2, 4)[grade]
-    if grade == 3:
-        return 7
-    streak = grade4_streak(records)
-    return 60 if streak >= 3 else (30 if streak == 2 else 14)
+    last = records[-1]
+    if getattr(last, 'critical_gap', False):
+        return 1
+    if last.grade <= 2:
+        base = (1, 2, 4)[last.grade]
+    elif last.grade == 3:
+        base = 7
+    else:
+        streak = grade4_streak(records)
+        # Três notas 4 no mesmo dia não equivalem a memória consolidada.
+        if streak >= 3:
+            last_three = records[-3:]
+            first_gap = elapsed_days(last_three[0].created_at, aware(last_three[1].created_at)) or 0
+            second_gap = elapsed_days(last_three[1].created_at, aware(last_three[2].created_at)) or 0
+            sufficiently_spaced = first_gap >= 1 and second_gap >= 14 and second_gap > first_gap
+            base = 60 if sufficiently_spaced else 30
+        else:
+            base = 30 if streak == 2 else 14
+    difficulty = getattr(last, 'difficulty', None)
+    if difficulty == 3:
+        return max(1, (base + 1) // 2)
+    return min(60, base)
 
 
 def question_interval(records: list[QuestionAttempt]) -> int:
+    """Acertos com pouca confiança não são tratados como domínio."""
     if not records or not records[-1].is_correct:
         return 1
+    last_confidence = getattr(records[-1], 'confidence', None)
+    if last_confidence == 1:
+        return 1
+    if last_confidence == 2:
+        return 2
     streak = 0
     for record in reversed(records):
-        if not record.is_correct:
+        if not record.is_correct or getattr(record, 'confidence', None) in (1, 2):
             break
         streak += 1
-    return (3, 7, 14, 30, 60)[min(streak - 1, 4)]
+    return (3, 7, 14, 30, 60)[min(max(0, streak - 1), 4)]
 
 
 def is_topic_mastered(records: list[TopicReview], attempts: list[QuestionAttempt]) -> bool:
-    """Critério conservador: 3 notas 4 espaçadas, questões variadas e sem lacuna grave atual."""
+    """Exige domínio demonstrado em sessões espaçadas + questões variadas."""
     if len(records) < 3 or grade4_streak(records) < 3:
         return False
-    best = records[-3:]
-    first_gap = elapsed_days(best[0].created_at, aware(best[1].created_at)) or 0
-    second_gap = elapsed_days(best[1].created_at, aware(best[2].created_at)) or 0
+    last_three = records[-3:]
+    first_gap = elapsed_days(last_three[0].created_at, aware(last_three[1].created_at)) or 0
+    second_gap = elapsed_days(last_three[1].created_at, aware(last_three[2].created_at)) or 0
     if first_gap < 1 or second_gap < 14 or second_gap <= first_gap:
         return False
-    # Exige amostra variada: últimas respostas em >= 5 questões diferentes.
     last_by_question: dict[int, QuestionAttempt] = {}
     for attempt in attempts:
         last_by_question[attempt.question_id] = attempt
     if len(last_by_question) < 5 or len(attempts) < 8:
         return False
-    rate = sum(int(r.is_correct) for r in last_by_question.values()) / len(last_by_question)
-    return rate >= 0.85 and all(r.grade >= 3 for r in records[-3:])
+    confident_correct = sum(int(r.is_correct and getattr(r, 'confidence', None) != 1)
+                            for r in last_by_question.values())
+    rate = confident_correct / len(last_by_question)
+    return rate >= 0.85 and all(r.grade >= 3 and not getattr(r, 'critical_gap', False)
+                                for r in last_three)
 
 
 def build_queue(db: Session, now: datetime | None = None, exclude_session_id: int | None = None,
-                topic_minutes: int = 40, question_minutes: int = 20) -> dict[str, Any]:
-    """Calcula na hora: a passagem de até 7+ dias só altera a urgência, sem criar faltas."""
-    if topic_minutes < 0 or question_minutes < 0 or topic_minutes > 180 or question_minutes > 180:
-        raise ValueError("Tempo de fila inválido.")
-    now = now or datetime.now(timezone.utc)
+                topic_minutes: int | None = None, question_minutes: int | None = None) -> dict[str, Any]:
+    """Por padrão retorna o acervo INTEIRO, ordenado, sem corte por minutos.
+
+    Limites por minutos só existem para compatibilidade com clientes anteriores
+    que os solicitarem explicitamente. Não há relógio nem duração obrigatória.
+    """
+    for value in (topic_minutes, question_minutes):
+        if value is not None and not (0 <= value <= 180):
+            raise ValueError("Tempo de fila inválido.")
+    now = aware(now or datetime.now(timezone.utc))
     topics = db.scalars(select(Topic).order_by(Topic.id)).all()
+    # Arquivar apenas retira da fila; tentativas continuam preservadas no banco.
     questions = db.scalars(select(Question).order_by(Question.id)).all()
+    active_questions = [q for q in questions if q.archived_at is None]
     topic_reviews = db.scalars(select(TopicReview).order_by(TopicReview.created_at, TopicReview.id)).all()
     attempts = db.scalars(select(QuestionAttempt).order_by(QuestionAttempt.created_at, QuestionAttempt.id)).all()
     new_content = db.scalars(select(NewContentLog).order_by(NewContentLog.created_at, NewContentLog.id)).all()
+
     by_topic: dict[int, list[TopicReview]] = defaultdict(list)
     by_question: dict[int, list[QuestionAttempt]] = defaultdict(list)
     question_by_topic: dict[int, list[QuestionAttempt]] = defaultdict(list)
     latest_study: dict[int, datetime] = {}
-    for item in topic_reviews:
-        by_topic[item.topic_id].append(item)
-    for item in attempts:
-        by_question[item.question_id].append(item)
+    for review in topic_reviews:
+        by_topic[review.topic_id].append(review)
     topic_for_question = {q.id: q.topic_id for q in questions}
-    for item in attempts:
-        topic_id = topic_for_question.get(item.question_id)
+    for attempt in attempts:
+        by_question[attempt.question_id].append(attempt)
+        topic_id = topic_for_question.get(attempt.question_id)
         if topic_id is not None:
-            question_by_topic[topic_id].append(item)
-    for item in new_content:
-        latest_study[item.topic_id] = item.created_at
+            question_by_topic[topic_id].append(attempt)
+    for content in new_content:
+        latest_study[content.topic_id] = content.created_at
+
     topic_queue = []
-    for t in topics:
-        history = by_topic[t.id]
+    for topic in topics:
+        history = by_topic[topic.id]
         if exclude_session_id is not None and any(r.session_id == exclude_session_id for r in history):
             continue
         last = history[-1] if history else None
-        # Uma aula nova só fica elegível para revisão 1 dia depois, se ainda não há nota.
-        reference = last.created_at if last else latest_study.get(t.id)
+        reference = last.created_at if last else latest_study.get(topic.id)
         days = elapsed_days(reference, now)
         interval = topic_interval(history)
         ratio = 1.0 if days is None else days / interval
-        due = ratio >= 1
-        difficulty = (4 - last.grade) / 4 if last else 0.5
-        errors = sum(r.grade <= 2 for r in history) / len(history) if history else 0.5
-        # Fórmula transparente, com cada fator entre 0 e 1.
-        priority = 0.35 * difficulty + 0.30 * min(1, ratio) + 0.25 * errors + 0.10 * t.importance / 5
-        mastered = is_topic_mastered(history, question_by_topic[t.id])
+        due = ratio >= 1.0
+        # Sem primeira nota, assunto fica disponível, mas pode estar em espera
+        # de 1 dia se a estudante marcou que acabou de vê-lo na aula.
+        recall_difficulty = (4 - last.grade) / 4 if last else 0.50
+        perceived = ((last.difficulty - 1) / 2) if last and last.difficulty else recall_difficulty
+        difficulty = 0.78 * recall_difficulty + 0.22 * perceived
+        gaps = sum(r.grade <= 2 or getattr(r, 'critical_gap', False) for r in history) / len(history) if history else 0.40
+        overdue = min(1, ratio / 3)
+        # A frequência histórica ajuda, mas um tópico ainda não visto ganha
+        # bônus de cobertura; repetição de um tópico nunca apaga outros.
+        coverage = 0.05 / (1 + len(history))
+        gap_bonus = 0.12 if last and last.critical_gap else 0
+        priority = min(1.0, 0.33*difficulty + 0.30*overdue + 0.23*gaps +
+                       0.09*topic.importance/5 + coverage + gap_bonus)
+        mastered = is_topic_mastered(history, question_by_topic[topic.id])
+        if not history and reference is None:
+            reason = 'Ainda não estudado — disponível para começar'
+        elif not history:
+            reason = 'Primeira revisão após a aula' if due else 'Primeira revisão programada'
+        elif last and last.critical_gap:
+            reason = 'Lacuna conceitual — reforçar a explicação'
+        elif due:
+            reason = 'Revisão vencida — memória precisa de reforço'
+        elif mastered:
+            reason = 'Domínio em manutenção espaçada'
+        else:
+            reason = 'Manutenção programada'
+        next_due = (aware(reference) + timedelta(days=interval)).isoformat() if reference else None
         topic_queue.append({
-            "id": t.id, "subject_id": t.subject_id, "code": t.code, "title": t.title,
-            "grade": last.grade if last else None, "attempts": len(history),
-            "days_since": round(days, 1) if days is not None else None,
-            "interval_days": interval, "due": due, "mastered": mastered,
-            "priority": round(priority, 4), "estimated_minutes": 10,
-            "reason": ("Ainda não revisado" if not last else ("Revisão atrasada" if due else "Manutenção programada")),
+            'id':topic.id, 'subject_id':topic.subject_id,'code':topic.code,'title':topic.title,
+            'grade':last.grade if last else None,'difficulty':last.difficulty if last else None,
+            'critical_gap':bool(last.critical_gap) if last else False,
+            'attempts':len(history),'days_since':round(days,1) if days is not None else None,
+            'interval_days':interval,'due':due,'mastered':mastered,'priority':round(priority,4),
+            'next_due_at':next_due,'reason':reason,
         })
+
+    topic_subjects = {t.id:t.subject_id for t in topics}
     question_queue = []
-    for q in questions:
+    for q in active_questions:
         history = by_question[q.id]
         if exclude_session_id is not None and any(r.session_id == exclude_session_id for r in history):
             continue
@@ -130,37 +187,71 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
         ratio = 1.0 if days is None else days / interval
-        due = ratio >= 1
+        due = ratio >= 1.0
         correct = sum(int(r.is_correct) for r in history)
         errors = len(history) - correct
-        # Laplace: não supõe domínio com um único acerto.
-        smoothed_success = (correct + 1) / (len(history) + 2)
+        # Acerto chutado e acerto incerto valem menos para estimar domínio.
+        effective_correct = sum((1 if r.confidence in (3, None) else (0.65 if r.confidence == 2 else 0.25))
+                                for r in history if r.is_correct)
+        smoothed_success = (effective_correct + 1) / (len(history) + 2)
         wrong_rate = errors / len(history) if history else 0.5
         repeated_errors = sum(not r.is_correct for r in history[-3:]) >= 2
         uncertainty = 2 / (len(history) + 2)
-        priority = (0.40 * (1 - smoothed_success) + 0.25 * wrong_rate +
-                    0.25 * min(1, ratio) + 0.10 * uncertainty)
-        if repeated_errors:
-            priority += 0.10
+        overdue = min(1, ratio / 3)
+        # A pilha considera necessidade de reforço, incerteza, tempo sem rever
+        # e cobertura de todo o caderno. A prioridade muda a cada avaliação.
+        priority = min(1.0, 0.36*(1-smoothed_success) + 0.19*wrong_rate +
+                       0.29*overdue + 0.09*uncertainty +
+                       (0.12 if repeated_errors else 0.0) + 0.07/(1+len(history)))
+        # Somente sugere arquivar após acertos seguros, repetidos e espaçados.
+        # Jamais arquiva automaticamente; a decisão é da estudante.
+        recent = history[-4:]
+        archive_suggested = (
+            len(history) >= 6 and len(recent) == 4 and
+            all(r.is_correct and r.confidence == 3 for r in recent) and
+            correct / len(history) >= 0.80 and
+            (elapsed_days(recent[0].created_at, aware(recent[-1].created_at)) or 0) >= 14
+        )
+        if archive_suggested:
+            reason = 'Questão dominada — considere retirá-la da pilha'
+        else:
+            reason = None
+        if reason is None and repeated_errors:
+            reason = 'Erros recorrentes — revisar o conceito'
+        elif reason is None and last and last.is_correct and last.confidence == 1:
+            reason = 'Acerto com chute — não consolidado'
+        elif reason is None and not history:
+            reason = 'Questão ainda não reavaliada'
+        elif reason is None and due:
+            reason = 'Retomar questão para reforçar a memória'
+        elif reason is None:
+            reason = 'Manutenção espaçada'
+        next_due = (aware(last.created_at)+timedelta(days=interval)).isoformat() if last else None
         question_queue.append({
-            "id": q.id, "topic_id": q.topic_id, "url": q.url,
-            "statement": q.statement, "attempts": len(history), "errors": errors,
-            "last_correct": last.is_correct if last else None,
-            "days_since": round(days, 1) if days is not None else None,
-            "interval_days": interval, "due": due, "priority": round(priority, 4),
-            "estimated_minutes": 5,
-            "reason": "Erros recorrentes" if repeated_errors else ("Pendente" if not history else ("Retentar" if not last.is_correct else "Manutenção")),
+            'id':q.id,'subject_id':q.subject_id or topic_subjects.get(q.topic_id),
+            'topic_id':q.topic_id,'url':q.url,'statement':q.statement,
+            'attempts':len(history),'correct':correct,'errors':errors,
+            'last_correct':last.is_correct if last else None,
+            'last_confidence':last.confidence if last else None,
+            'days_since':round(days,1) if days is not None else None,
+            'interval_days':interval,'due':due,'priority':round(priority,4),
+            'next_due_at':next_due,'reason':reason,
+            'archive_suggested':archive_suggested,
+            'archive_reason':('Últimos 4 acertos com segurança, em revisões espaçadas, e pelo menos 80% de acerto no histórico.' if archive_suggested else None),
         })
-    # Priorização por vencimento e dificuldade; não revisados não desaparecem da fila.
-    topic_queue.sort(key=lambda x: (not x["due"], -x["priority"], x["id"]))
-    question_queue.sort(key=lambda x: (not x["due"], -x["priority"], x["id"]))
+    # A prioridade é global e contínua: sem primeiro cortar por 'vencidos'
+    # ou por dia, permitindo equilibrar revisões e cobertura do edital.
+    topic_queue.sort(key=lambda x:(-x['priority'],x['attempts'],x['id']))
+    question_queue.sort(key=lambda x:(-x['priority'],x['attempts'],x['id']))
+    visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes//10]
+    visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes//5]
     return {
-        "topic_minutes": topic_minutes, "question_minutes": question_minutes,
-        "topics": topic_queue[:topic_minutes // 10],
-        "questions": question_queue[:question_minutes // 5],
-        "total_topics": len(topics), "total_questions": len(questions),
-        "due_topics": sum(x["due"] for x in topic_queue),
-        "due_questions": sum(x["due"] for x in question_queue),
-        "generated_at": now.isoformat(),
-        "note": "Itens não realizados não recebem nota nem erro. A fila é recalculada pelo tempo decorrido.",
+        'topics':visible_topics,'questions':visible_questions,
+        'topic_minutes':topic_minutes,'question_minutes':question_minutes,
+        'total_topics':len(topics),'total_questions':len(active_questions),
+        'archived_questions':len(questions)-len(active_questions),
+        'due_topics':sum(x['due'] for x in topic_queue),
+        'due_questions':sum(x['due'] for x in question_queue),
+        'generated_at':now.isoformat(),
+        'note':'Sem tempo obrigatório. Somente respostas registradas são avaliadas; refresh nunca reinicia o histórico.',
     }

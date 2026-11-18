@@ -30,6 +30,7 @@ class QuestionIn(BaseModel):
     statement: str | None = Field(default=None, min_length=3)
     choices: list[str] | None = None
     topic_id: int | None = None
+    subject_id: int | None = None
 
     @model_validator(mode="after")
     def require_source(self):
@@ -45,23 +46,33 @@ class QuestionOut(BaseModel):
     statement: str | None
     choices: list[str] | None
     topic_id: int | None
+    subject_id: int | None
+    archived_at: datetime | None = None
+
+
+class QuestionArchiveIn(BaseModel):
+    archived: bool
 
 
 class TopicReviewIn(BaseModel):
     topic_id: int
     grade: int = Field(ge=0, le=4)
-    notes: str | None = None
+    difficulty: int | None = Field(default=None, ge=1, le=3)
+    critical_gap: bool = False
+    notes: str | None = Field(default=None, max_length=3000)
 
 
 class QuestionAttemptIn(BaseModel):
     question_id: int
     is_correct: bool
-    notes: str | None = None
+    confidence: int | None = Field(default=None, ge=1, le=3)
+    error_type: str | None = Field(default=None, pattern="^(concept|interpretation|attention|calculation|other)$")
+    notes: str | None = Field(default=None, max_length=3000)
 
 
 class NewContentIn(BaseModel):
     topic_id: int
-    minutes: int = Field(ge=1, le=180)
+    minutes: int | None = Field(default=None, ge=1, le=180)
     notes: str | None = None
 
 

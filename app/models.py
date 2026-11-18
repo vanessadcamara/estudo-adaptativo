@@ -35,10 +35,12 @@ class Question(Base):
     __tablename__ = "questions"
     id: Mapped[int] = mapped_column(primary_key=True)
     topic_id: Mapped[int | None] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=True)
+    subject_id: Mapped[int | None] = mapped_column(ForeignKey("subjects.id", ondelete="RESTRICT"), nullable=True)
     url: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
     statement: Mapped[str | None] = mapped_column(Text, nullable=True)
     choices: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     topic: Mapped[Topic | None] = relationship()
 
 
@@ -59,6 +61,8 @@ class TopicReview(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
     topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=False)
     grade: Mapped[int] = mapped_column(Integer, nullable=False)
+    difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    critical_gap: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -70,6 +74,8 @@ class QuestionAttempt(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
     question_id: Mapped[int] = mapped_column(ForeignKey("questions.id", ondelete="RESTRICT"), nullable=False)
     is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -80,7 +86,7 @@ class NewContentLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
     topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=False)
-    minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 

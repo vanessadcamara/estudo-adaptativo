@@ -15,7 +15,7 @@ from app.auth import (router as auth_router, find_session, require_login,
 from app.engine import build_queue
 from app.models import NewContentLog, Question, QuestionAttempt, StudySession, Subject, Topic, TopicReview, utcnow
 from app.schemas import (NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
-                         SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn)
+                         SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn, QuestionArchiveIn)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -24,7 +24,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.2.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.4.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -111,17 +111,28 @@ def create_topic(payload: TopicIn, db: Session = Depends(get_db)):
 
 
 @api.get("/questions", response_model=list[QuestionOut])
-def list_questions(db: Session = Depends(get_db)):
-    return db.scalars(select(Question).order_by(Question.id.desc())).all()
+def list_questions(include_archived: bool = False, db: Session = Depends(get_db)):
+    query = select(Question)
+    if not include_archived:
+        query = query.where(Question.archived_at.is_(None))
+    return db.scalars(query.order_by(Question.id.desc())).all()
 
 
 @api.post("/questions", response_model=QuestionOut, status_code=status.HTTP_201_CREATED)
 def create_question(payload: QuestionIn, db: Session = Depends(get_db)):
     if payload.topic_id is not None and not db.get(Topic, payload.topic_id):
         raise HTTPException(404, "Tópico não encontrado.")
+    subject_id = payload.subject_id
+    if subject_id is not None and not db.get(Subject, subject_id):
+        raise HTTPException(404, "Matéria não encontrada.")
+    if payload.topic_id is not None:
+        topic = db.get(Topic, payload.topic_id)
+        if subject_id is not None and topic.subject_id != subject_id:
+            raise HTTPException(422, "O tópico não pertence à matéria selecionada.")
+        subject_id = topic.subject_id
     entry = Question(url=str(payload.url) if payload.url else None,
                      statement=payload.statement.strip() if payload.statement else None,
-                     choices=payload.choices, topic_id=payload.topic_id)
+                     choices=payload.choices, topic_id=payload.topic_id, subject_id=subject_id)
     db.add(entry)
     try:
         db.commit()
@@ -130,6 +141,21 @@ def create_question(payload: QuestionIn, db: Session = Depends(get_db)):
         raise HTTPException(409, "Esta questão já está cadastrada.")
     db.refresh(entry)
     return entry
+
+
+@api.patch("/questions/{question_id}/archive", response_model=QuestionOut)
+def archive_question(question_id: int, payload: QuestionArchiveIn, db: Session = Depends(get_db)):
+    """Retira/recoloca uma questão na pilha sem apagar nenhuma tentativa."""
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(404, "Questão não encontrada.")
+    if payload.archived and question.archived_at is None:
+        question.archived_at = utcnow()
+    elif not payload.archived:
+        question.archived_at = None
+    db.commit()
+    db.refresh(question)
+    return question
 
 
 @api.get("/sessions/open", response_model=SessionOut | None)
@@ -158,17 +184,25 @@ def get_open_session_or_409(db: Session, session_id: int) -> StudySession:
     return entry
 
 
+@api.get("/sessions/{session_id}/progress")
+def session_progress(session_id: int, db: Session = Depends(get_db)):
+    get_open_session_or_409(db, session_id)
+    reviewed = db.scalars(select(TopicReview.topic_id).where(TopicReview.session_id == session_id)).all()
+    answered = db.scalars(select(QuestionAttempt.question_id).where(QuestionAttempt.session_id == session_id)).all()
+    return {"topics": reviewed, "questions": answered}
+
+
 @api.get("/sessions/{session_id}/queue")
-def session_queue(session_id: int, topic_minutes: int = Query(40, ge=0, le=180),
-                  question_minutes: int = Query(20, ge=0, le=180), db: Session = Depends(get_db)):
+def session_queue(session_id: int, topic_minutes: int | None = Query(None, ge=0, le=180),
+                  question_minutes: int | None = Query(None, ge=0, le=180), db: Session = Depends(get_db)):
     get_open_session_or_409(db, session_id)
     return build_queue(db, exclude_session_id=session_id,
                        topic_minutes=topic_minutes, question_minutes=question_minutes)
 
 
 @api.get("/queue")
-def preview_queue(topic_minutes: int = Query(40, ge=0, le=180),
-                  question_minutes: int = Query(20, ge=0, le=180), db: Session = Depends(get_db)):
+def preview_queue(topic_minutes: int | None = Query(None, ge=0, le=180),
+                  question_minutes: int | None = Query(None, ge=0, le=180), db: Session = Depends(get_db)):
     return build_queue(db, topic_minutes=topic_minutes, question_minutes=question_minutes)
 
 
@@ -178,7 +212,8 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
     if not db.get(Topic, payload.topic_id):
         raise HTTPException(404, "Tópico não encontrado.")
     entry = TopicReview(session_id=session_id, topic_id=payload.topic_id,
-                        grade=payload.grade, notes=payload.notes)
+                        grade=payload.grade, difficulty=payload.difficulty,
+                        critical_gap=payload.critical_gap, notes=payload.notes)
     db.add(entry)
     try:
         db.commit()
@@ -194,7 +229,8 @@ def record_question_attempt(session_id: int, payload: QuestionAttemptIn, db: Ses
     if not db.get(Question, payload.question_id):
         raise HTTPException(404, "Questão não encontrada.")
     entry = QuestionAttempt(session_id=session_id, question_id=payload.question_id,
-                            is_correct=payload.is_correct, notes=payload.notes)
+                            is_correct=payload.is_correct, confidence=payload.confidence,
+                            error_type=payload.error_type, notes=payload.notes)
     db.add(entry)
     try:
         db.commit()
@@ -223,10 +259,11 @@ def refresh_session(session_id: int, db: Session = Depends(get_db)):
     topic_grades = db.scalars(select(TopicReview.grade).where(TopicReview.session_id == session_id)).all()
     attempts = db.scalars(select(QuestionAttempt.is_correct).where(QuestionAttempt.session_id == session_id)).all()
     new_minutes = db.scalar(select(func.sum(NewContentLog.minutes)).where(NewContentLog.session_id == session_id)) or 0
+    new_count = db.scalar(select(func.count()).select_from(NewContentLog).where(NewContentLog.session_id == session_id)) or 0
     summary = {
         "topics_reviewed": len(topic_grades), "questions_attempted": len(attempts),
         "questions_correct": sum(attempts), "questions_wrong": len(attempts) - sum(attempts),
-        "new_content_minutes": new_minutes,
+        "new_content_minutes": new_minutes, "new_content_records": new_count,
         "grades": {str(n): topic_grades.count(n) for n in range(5)},
     }
     entry.status = "closed"
