@@ -1,0 +1,545 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,8 @@
+-# Estudo Adaptativo BB — versão 0.7
++# Estudo Adaptativo BB — versão 0.8
++
++**Atualização:** o risco de esquecimento agora tem influência limitada (até 8 pontos) **somente na ordenação local** de Cards e Caderno. A fórmula-base de prioridade dos Cards permanece exata. A estimativa usa ajuste retrospectivo conservador por matéria e tipo de item, sem prometer probabilidade calibrada.
++
++**Questões semi-inéditas:** só são cadastradas após um erro no site externo. O sistema não conta esse erro implícito como tentativa; acompanha a última reavaliação segura por link distinto, com lacuna de pelo menos sete dias, e separa esse indicador de previsões de desempenho na prova. Meta de 90% é referência, não projeção de nota. Vincular um link a um assunto não adiciona pontos à prioridade, embora continue influenciando o estado de domínio. Nenhum novo campo ou migração de banco foi necessário.
+ 
+ Sistema pessoal de revisão adaptativa para **Banco do Brasil — Escriturário (Agente Comercial)**. A interface tem **três abas**: Cards, Caderno de erros e Configurações. Sem cronômetro, sem cotas diárias e sem calendário obrigatório.
+ 
+diff --git a/app/engine.py b/app/engine.py
+--- a/app/engine.py
++++ b/app/engine.py
+@@ -141,6 +141,86 @@
+         return 'sem_dados'
+     return 'alto' if risk >= 65 else 'moderado' if risk >= 35 else 'baixo'
+ 
++
++
++def empirical_risk_adjustment(histories: list[list[Any]], interval_fn, risk_fn,
++                              unsuccessful, now: datetime) -> tuple[float, int]:
++    """Correção retrospectiva conservadora, APENAS por matéria e por tipo.
++
++    Compara o risco pré-revisão com o resultado da revisão seguinte. Não é
++    calibração probabilística formal: amostras são pequenas e selecionadas.
++    Não modifica o banco de dados, nunca cruza matérias ou Cards/Questões.
++    """
++    deltas: list[float] = []
++    for events in histories:
++        for index in range(1, len(events)):
++            prior = events[:index]
++            at = aware(events[index].created_at)
++            if at <= aware(prior[-1].created_at) or at > now:
++                continue
++            days = elapsed_days(prior[-1].created_at, at)
++            forecast = risk_fn(prior, days, interval_fn(prior))
++            if forecast is not None:
++                deltas.append((1.0 if unsuccessful(events[index]) else 0.0) - forecast / 100.0)
++    samples = len(deltas)
++    if samples < 6:
++        return 0.0, samples
++    # Até 12 pontos percentuais, exigindo muitas observações para ganhar peso.
++    correction = (sum(deltas) / samples) * min(0.5, samples / (samples + 20))
++    return max(-0.12, min(0.12, correction)), samples
++
++
++def adjusted_risk(raw_risk: float | None, correction: float) -> float | None:
++    return None if raw_risk is None else round(max(0.0, min(100.0, raw_risk + 100 * correction)), 1)
++
++
++def ranking_score(priority: float, risk: float | None) -> tuple[float, float]:
++    """Fórmula-base intacta; risco adiciona no máximo 8 pontos à ordenação."""
++    bonus = round(0.08 * risk, 2) if risk is not None else 0.0
++    return round(min(100.0, priority + bonus), 2), bonus
++
++
++def semi_novel_progress(questions: list[Question], attempts_by_question: dict[int, list[QuestionAttempt]],
++                        now: datetime) -> dict[str, Any]:
++    """Retenção na amostra que JÁ foi errada no site externo.
++
++    Só conta a ÚLTIMA reavaliação elegível por link distinto, separada da
++    tentativa anterior por ao menos sete dias. Primeiro erro externo NÃO é
++    uma tentativa do app, e itens ainda não reavaliados não viram fracassos.
++    """
++    verified: list[tuple[int, datetime, bool]] = []
++    first_pass = 0
++    for question in questions:
++        events = [a for a in attempts_by_question[question.id] if aware(a.created_at) <= now]
++        if events:
++            first_pass += 1
++        last_spaced = None
++        for i in range(1, len(events)):
++            gap = elapsed_days(events[i-1].created_at, aware(events[i].created_at)) or 0.0
++            if gap >= 7:
++                last_spaced = events[i]
++        if last_spaced is not None:
++            verified.append((question.id, aware(last_spaced.created_at),
++                             bool(last_spaced.is_correct and last_spaced.confidence == 3)))
++    count = len(verified)
++    secure = sum(ok for _, _, ok in verified)
++    recent = [(at, ok) for _, at, ok in verified if (now-at).days < 30]
++    previous = [(at, ok) for _, at, ok in verified if 30 <= (now-at).days < 60]
++    recent_rate = 100*sum(ok for _,ok in recent)/len(recent) if recent else None
++    previous_rate = 100*sum(ok for _,ok in previous)/len(previous) if previous else None
++    trend = round(recent_rate-previous_rate,1) if len(recent)>=5 and len(previous)>=5 else None
++    return {
++        'registered': len(questions), 'reviewed_in_app': first_pass,
++        'spaced_distinct': count, 'spaced_secure': secure,
++        'spaced_secure_percent': round(100*secure/count,1) if count else None,
++        'recent_30d_count': len(recent),
++        'recent_30d_percent': round(recent_rate,1) if recent_rate is not None else None,
++        'previous_30d_count': len(previous),
++        'previous_30d_percent': round(previous_rate,1) if previous_rate is not None else None,
++        'trend_pp': trend, 'target_percent': 90,
++        'sufficient_sample': count >= 10,
++        'interpretation': 'Amostra enviesada: somente questões erradas previamente no site; não estima nota da prova.',
++    }
+ 
+ def pending_topic_gap(records: list[TopicReview]) -> bool:
+     """Uma lacuna crítica só é resolvida por nova explicação segura sem lacunas."""
+@@ -277,6 +357,24 @@
+     for content in new_content:
+         latest_study[content.topic_id] = content.created_at
+ 
++    # Calibração experimental sempre restrita à própria matéria. Nunca usa
++    # históricos de Português para alterar prioridades de Matemática.
++    topic_subject_histories: dict[int, list[list[TopicReview]]] = defaultdict(list)
++    question_subject_histories: dict[int, list[list[QuestionAttempt]]] = defaultdict(list)
++    for topic in topics:
++        topic_subject_histories[topic.subject_id].append(by_topic[topic.id])
++    for q in active_questions:
++        scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
++        question_subject_histories[scope_id].append(by_question[q.id])
++    topic_adjustments = {scope: empirical_risk_adjustment(
++        rows, topic_interval, topic_forgetting_risk,
++        lambda r: r.grade <= 2 or bool(getattr(r, 'critical_gap', False)), now)
++        for scope, rows in topic_subject_histories.items()}
++    question_adjustments = {scope: empirical_risk_adjustment(
++        rows, question_interval, question_forgetting_risk,
++        lambda r: not r.is_correct or r.confidence != 3, now)
++        for scope, rows in question_subject_histories.items()}
++
+     topic_queue = []
+     for topic in topics:
+         history = by_topic[topic.id]
+@@ -290,11 +388,13 @@
+         # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
+         interval = topic_interval(history) if mastered else min(30, topic_interval(history))
+         overdue_days = max(0.0, days - interval) if days is not None else 0.0
+-        risk = topic_forgetting_risk(history, days, interval)
++        correction, calibration_samples = topic_adjustments.get(topic.subject_id, (0.0, 0))
++        risk = adjusted_risk(topic_forgetting_risk(history, days, interval), correction)
+         maintenance_required = days is not None and days >= interval
+         components = topic_priority_components(topic, history, days, interval)
+         priority = round(0.35 * components['D'] + 0.30 * components['T'] +
+                          0.25 * components['E'] + 0.10 * components['I'], 2)
++        recommended_priority, risk_bonus = ranking_score(priority, risk)
+         state = topic_state(history, evidence)
+         if not history and reference is None:
+             reason = 'Assunto novo — primeira avaliação disponível'
+@@ -317,6 +417,9 @@
+             'interval_days': interval, 'due': maintenance_required,
+             'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
+             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
++            'risk_calibration_samples': calibration_samples,
++            'risk_calibration_adjustment_pp': round(100 * correction, 2),
++            'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
+             'mastered': mastered, 'learning_state': state, 'mastery_evidence': evidence,
+             'priority': priority, 'priority_components': components,
+             'next_due_at': next_due, 'reason': reason,
+@@ -331,7 +434,9 @@
+         last = history[-1] if history else None
+         days = elapsed_days(last.created_at, now) if last else None
+         interval = question_interval(history)
+-        risk = question_forgetting_risk(history, days, interval)
++        scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
++        correction, calibration_samples = question_adjustments.get(scope_id, (0.0, 0))
++        risk = adjusted_risk(question_forgetting_risk(history, days, interval), correction)
+         ratio = days / interval if days is not None else 0.0
+         maintenance_required = days is not None and days >= interval
+         correct = sum(int(r.is_correct) for r in history)
+@@ -347,6 +452,7 @@
+                            0.29 * overdue + 0.09 * uncertainty +
+                            (0.12 if repeated_errors else 0.0) + 0.07 / (1 + len(history)))
+         priority = round(raw_priority * 100, 2)
++        recommended_priority, risk_bonus = ranking_score(priority, risk)
+         recent = history[-4:]
+         archive_suggested = (
+             len(history) >= 6 and len(recent) == 4 and
+@@ -377,6 +483,9 @@
+             'interval_days': interval, 'due': maintenance_required,
+             'maintenance_required': maintenance_required,
+             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
++            'risk_calibration_samples': calibration_samples,
++            'risk_calibration_adjustment_pp': round(100 * correction, 2),
++            'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
+             'overdue_days': round(max(0.0, days - interval), 2) if days is not None else 0.0,
+             'priority': priority, 'next_due_at': next_due, 'reason': reason,
+             'archive_suggested': archive_suggested,
+@@ -386,22 +495,22 @@
+ 
+     # A precedência é exclusivamente LOCAL À MATÉRIA; nunca agenda ou escolhe
+     # disciplinas, apenas ordena os itens da matéria já escolhida.
+-    # Dentro de cada grupo: maior atraso absoluto, depois prioridade P.
++    # Dentro do grupo vencido/não vencido: prioridade-base + bônus de risco
++    # (máximo 8 pontos). Atraso é desempate; nunca escolhe matéria.
+     topic_queue.sort(key=lambda x: (not x['maintenance_required'],
+-                                    -x['overdue_days'] if x['maintenance_required'] else 0,
+-                                    -x['priority'], x['attempts'], x['id']))
++                                    -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
+     question_queue.sort(key=lambda x: (not x['maintenance_required'],
+-                                       -x['overdue_days'] if x['maintenance_required'] else 0,
+-                                       -x['priority'], x['attempts'], x['id']))
++                                       -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
+     visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
+     visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
+     return {
+         'topics': visible_topics, 'questions': visible_questions, 'subject_id': subject_id,
++        'semi_novel_progress': semi_novel_progress(active_questions, by_question, now),
+         'topic_minutes': topic_minutes, 'question_minutes': question_minutes,
+         'total_topics': len(topics), 'total_questions': len(active_questions),
+         'archived_questions': len(questions) - len(active_questions),
+         'due_topics': sum(x['due'] for x in topic_queue),
+         'due_questions': sum(x['due'] for x in question_queue),
+         'generated_at': now.isoformat(),
+-        'note': 'P=0,35D+0,30T+0,25E+0,10I; prazo vencido tem prioridade só na matéria selecionada; risco heurístico não calibrado; sem revisão obrigatória.',
++        'note': 'P=0,35D+0,30T+0,25E+0,10I preservada; risco com ajuste empírico conservador até 8 pontos de ordenação; apenas na matéria escolhida. Questões semi-inéditas não estimam nota de prova.',
+     }
+diff --git a/app/main.py b/app/main.py
+--- a/app/main.py
++++ b/app/main.py
+@@ -24,7 +24,7 @@
+     yield
+ 
+ 
+-app = FastAPI(title="Estudo Adaptativo BB", version="0.7.0", lifespan=lifespan,
++app = FastAPI(title="Estudo Adaptativo BB", version="0.8.0", lifespan=lifespan,
+               docs_url=None if is_production() else "/docs",
+               redoc_url=None if is_production() else "/redoc",
+               openapi_url=None if is_production() else "/openapi.json")
+diff --git a/app/static/app.js b/app/static/app.js
+--- a/app/static/app.js
++++ b/app/static/app.js
+@@ -1,4 +1,4 @@
+-/* v0.7 — seleção explícita da matéria, filas isoladas e risco heurístico. */
++/* v0.8 — risco empírico conservador, filas isoladas e evolução semi-inédita. */
+ 'use strict';
+ const state = {
+   csrf: null, session: null,
+@@ -147,8 +147,10 @@
+     (entry.learning_state ? (STATE_LABELS[entry.learning_state]||'Em aprendizagem'):
+     entry.due?'Precisa de revisão':'Em manutenção');
+   const risk=entry.forgetting_risk_percent == null ? 'Risco: sem histórico' :
+-    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (heurístico)`;
+-  return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)} · ${Number(entry.priority).toFixed(1)}/100</strong></span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
++    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (ajuste empírico, não validado)`;
++  const finalScore = entry.ranking_score ?? entry.priority;
++  const riskBump = entry.risk_priority_bonus || 0;
++  return `<div class="priority-line"><span><strong>Prioridade ${priority({...entry,priority:finalScore})} · ${Number(finalScore).toFixed(1)}/100</strong>${riskBump?` <small>(inclui +${riskBump.toFixed(1)} risco)</small>`:''}</span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
+ }
+ function masteryDetails(entry) {
+   const c=entry.priority_components, e=entry.mastery_evidence;
+@@ -159,16 +161,16 @@
+     ['varied_questions_85_percent',`Acertos ≥ 85% em questões distintas (${e.distinct_questions} questões; ${e.question_accuracy_percent??'—'}% de acertos)`],
+     ['no_critical_gaps','Sem lacunas ou erros conceituais graves pendentes'],
+     ['explained_without_consulting','Explicação sem consulta confirmada'],
+-    ['applied_to_new_questions','Aplicação em questões inéditas e variadas confirmada']
++    ['applied_to_new_questions','Aplicação em questões variadas sem consulta confirmada']
+   ];
+   const breakdown=`D ${c.D.toFixed(1)} · T ${c.T.toFixed(1)} · E ${c.E.toFixed(1)} · I ${c.I.toFixed(1)}`;
+   return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
+     <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
+     <p>Intervalo adaptativo: ${entry.interval_days} dia(s). Se vencer, o assunto sobe na fila <strong>somente desta matéria</strong>. Você escolhe quando voltar a estudá-la.</p>
+-    <p>O risco é uma estimativa baseada em desempenho, confiança/esforço e tempo decorrido; não é uma probabilidade validada.</p>
++    <p>Prioridade-base ${Number(entry.priority).toFixed(1)}/100 + risco (até 8 pontos) = ${Number(entry.ranking_score??entry.priority).toFixed(1)}/100 na recomendação. O risco recebe ajuste empírico conservador quando há histórico suficiente, sem ser probabilidade validada.</p>
+     <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
+     <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
+-    <p class="panel-help">Novidade e variedade são confirmadas por você; não são inferidas automaticamente dos links.</p>
++    <p class="panel-help">Variedade é confirmada por você; links previamente errados não são questões inéditas e não estimam sua nota na prova.</p>
+   </details>`;
+ }
+ function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
+@@ -187,6 +189,11 @@
+   $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}${masteryDetails(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
+ }
+ function renderQuestions() {
++  const progress=state.errorsQueue.semi_novel_progress;
++  $('semiNovelProgress').textContent=!state.errorsSubject?'':!progress?'':
++    progress.spaced_secure_percent==null
++      ? `Questões semi-inéditas: ${progress.registered} cadastradas, ${progress.reviewed_in_app} reavaliadas. Acompanhamento de retenção começa após duas tentativas separadas por ≥ 7 dias.`
++      : `Retenção em questões semi-inéditas: ${progress.spaced_secure}/${progress.spaced_distinct} links distintos com acerto seguro após ≥ 7 dias (${progress.spaced_secure_percent}%). Meta de referência: ${progress.target_percent}%. ${progress.sufficient_sample?'':'Amostra ainda pequena. '}${progress.trend_pp==null?'':`Variação observada entre períodos: ${progress.trend_pp>0?'+':''}${progress.trend_pp} p.p. `}Não prevê nota na prova.`;
+   const questions=visibleQuestions();
+   if (state.questionIndex>=questions.length)state.questionIndex=Math.max(0,questions.length-1);
+   const q=questions[state.questionIndex];
+diff --git a/app/static/index.html b/app/static/index.html
+--- a/app/static/index.html
++++ b/app/static/index.html
+@@ -5,8 +5,8 @@
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <meta name="theme-color" content="#f7f8fc">
+   <title>Estudo Adaptativo BB · Pilhas contínuas</title>
+-  <link rel="stylesheet" href="/static/style.css?v=7">
+-  <script src="/static/app.js?v=7" defer></script>
++  <link rel="stylesheet" href="/static/style.css?v=8">
++  <script src="/static/app.js?v=8" defer></script>
+ </head>
+ <body>
+   <div class="shell">
+@@ -37,6 +37,7 @@
+           <label class="field filter-field">Matéria<select id="errorsSubject" aria-label="Matéria do caderno"><option value="">Escolha uma matéria</option></select></label>
+           <button type="button" class="button outline" id="errorsRefresh">Atualizar prioridades</button>
+         </div>
++        <div id="semiNovelProgress" class="panel-help" aria-live="polite"></div>
+         <div id="questionStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando questões…</div></div>
+         <div class="navigator" aria-label="Navegar entre links">
+           <button type="button" id="questionPrevious" class="button outline">← Anterior</button>
+@@ -110,9 +111,9 @@
+       <fieldset class="question-block"><legend>4. Evidências adicionais (marque somente se for verdade)</legend>
+         <div class="checkbox-stack">
+           <label class="checkbox-row"><input type="checkbox" name="explained_without_consulting"> Consegui explicar o assunto e suas diferenças sem consultar o material.</label>
+-          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto em questões inéditas e variadas.</label>
++          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto sem consultar em questões variadas (não precisam ser inéditas).</label>
+         </div>
+-        <p class="panel-help">As confirmações serão salvas com a avaliação; não substituem as revisões espaçadas e os acertos exigidos.</p>
++        <p class="panel-help">As confirmações serão salvas com a avaliação; questões do caderno são semi-inéditas (já erradas no site). Nenhuma taxa aqui prevê seu resultado na prova.</p>
+       </fieldset>
+       <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
+       <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>
+diff --git a/docs/ESPECIFICACAO_FUNCIONAL.md b/docs/ESPECIFICACAO_FUNCIONAL.md
+--- a/docs/ESPECIFICACAO_FUNCIONAL.md
++++ b/docs/ESPECIFICACAO_FUNCIONAL.md
+@@ -1,4 +1,4 @@
+-# Especificação funcional — Estudo Adaptativo BB v0.7
++# Especificação funcional — Estudo Adaptativo BB v0.8
+ 
+ ## Princípios
+ 
+@@ -22,7 +22,7 @@
+ | Esforço de recuperação | Fácil, Moderado, Muito difícil | Sim |
+ | Lacuna conceitual grave | Não / Sim | Sim |
+ | Explicação sem consulta | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
+-| Aplicação em questões inéditas e variadas | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
++| Aplicação em questões variadas sem consulta | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
+ | Anotações | Texto livre | Não |
+ 
+ `Enviar respostas` registra o feedback e exibe o próximo assunto não avaliado desde o último refresh. `Pular` oculta somente durante essa passagem, sem reduzir peso ou registrar erro.
+@@ -73,27 +73,27 @@
+ - **E**: frequência de notas 0–2 ou lacuna crítica no histórico (0–100); sem histórico, E=50.
+ - **I**: importância cadastrada 1–5, normalizada por `(importância−1)×25`.
+ 
+-A fórmula não contém bônus. **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro do grupo de vencidos, maior atraso vem antes e P desempata. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
++A fórmula-base P não contém bônus; a ordenação pode receber um bônus separado e limitado de risco (até 8 pontos). **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro dos grupos vencidos e não vencidos, a pontuação de recomendação (P + bônus limitado de risco) ordena os itens, com atraso como desempate. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
+ 
+ **Estados de aprendizagem:**
+ 
+ - **Em aprendizagem**: sem histórico, nota 0–2 ou lacuna/erro conceitual grave pendente.
+ - **Em consolidação**: recuperação razoável, mas algum requisito de domínio ainda não foi comprovado.
+-- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões inéditas e variadas. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
++- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões variadas sem consulta. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
+ 
+ **Questões:** prioridade considerando insucesso suavizado (36%), frequência histórica de erros (19%), tempo relativo ao intervalo (29%), incerteza por amostra pequena (9%), bônus de cobertura (até 7%) e reforço para erros recorrentes (12%). A confiança reduz o valor de acertos chutados. Os intervalos sugeridos chegam até 60 dias; **não há impedimento de revisitar antes**.
+ 
+ A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com vencimento à frente apenas das demais questões da mesma matéria selecionada; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
+ 
+-### Risco de esquecimento e evolução dos intervalos — v0.7
++### Risco de esquecimento e evolução dos intervalos — v0.8
+ 
+ - Cada Card ou questão já avaliada apresenta `forgetting_risk_percent` (0–100) e `forgetting_risk_level` (`baixo`, `moderado`, `alto`). Sem avaliação: risco nulo (`null`), nível `sem_dados`.
+ - Estimativa: `risco = 100 × [1 − (1 − b) × exp(−0,43 × d / max(1,i))]`; `d` é o número de dias desde a última avaliação; `i` é o intervalo atual em dias; `b` é o risco inicial heurístico que depende da última nota, dificuldade e lapsos (Cards) ou do último resultado, confiança e erros recentes (Caderno). O termo temporal cresce com o tempo. É um indicador de apoio, **não** uma previsão probabilística calibrada.
+ - Os intervalos individuais mantêm as regras v0.6 como base e recebem ajuste conservador quando houver falhas recentes anteriores ao último sucesso. Acertos seguros repetidos progressivamente elevam intervalos das questões até 60 dias; notas baixas e lapsos críticos encurtam o intervalo de assuntos. O limite de 30 dias para não dominados permanece.
+-- O risco informativo não cria novo termo na fórmula `P` de Cards nem na pontuação do Caderno. Seu uso quantitativo em prioridades, com importância e tempo disponível, fica reservado para evolução futura após avaliação/calibração.
++- O risco adiciona até 8 pontos somente à pontuação de **ordenação**, sem mudar a fórmula-base P dos Cards nem a fórmula-base do Caderno. O ajuste empírico por matéria e módulo usa revisões anteriores, com mínimo de 6 observações e correção máxima de ±12 pontos percentuais; é experimental, não probabilidade calibrada.
+ - Nenhum agendamento, notificação, penalidade ou cobrança diária decorre de `next_due_at` ou `maintenance_required` (nome técnico mantido por compatibilidade).
+ 
+-### Isolamento obrigatório das filas — v0.7
++### Isolamento obrigatório das filas — v0.8
+ 
+ - `/api/queue?subject_id=ID` e `/api/sessions/{id}/queue?subject_id=ID` retornam somente assuntos e questões da matéria selecionada. `ID=0` isola questões legadas sem matéria.
+ - O frontend mantém duas filas de estado separadas: Cards e Caderno de erros. A seleção precisa ser explícita e pode ser diferente entre as duas telas.
+@@ -109,10 +109,18 @@
+ - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
+ - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
+ 
+-## Garantias práticas de funcionamento (v0.7)
++## Garantias práticas de funcionamento (v0.8)
+ 
+ - Nenhum cadastro fica somente no estado JavaScript. O formulário chama a API e recebe confirmação de `db.commit()`.
+ - Todos os dados são recarregados do PostgreSQL ao abrir o sistema, sem depender do cache do navegador.
+ - A pilha é calculada com todas as avaliações persistidas, e matérias/assuntos/links arquivados ficam fora da pilha sem eliminar relações históricas.
+ - O primeiro acesso com banco vazio mostra comandos clicáveis para criar matéria, assunto e questão. Não se preenche automaticamente dados fictícios.
+ - Há testes automatizados da API e um teste manual automatizado de navegação no Chromium em `scripts/smoke_navegador.py` (o script usa SQLite em memória; nunca altera o Neon real).
++
++### Evolução em questões semi-inéditas — v0.8
++
++- O cadastro do link significa **erro prévio no site externo**. A falha original não é contada como tentativa registrada no sistema, nem se assume o momento em que ocorreu.
++- Os percentuais são sobre **a amostra selecionada de questões já erradas**. Não projetam nota em simulados inéditos nem aproveitamento na prova do BB.
++- O indicador conta somente a **última tentativa elegível de cada link distinto**, separada da anterior por pelo menos sete dias, e só considera acerto seguro (`confidence=3`) como retenção. Não duplica o mesmo link no denominador.
++- A evolução recente é comparada com o período anterior apenas com pelo menos cinco links distintos elegíveis em cada período; taxa global com menos de dez links é marcada como amostra pequena. Meta de referência de 90% é informativa, não previsão da prova.
++- Todas essas medidas são locais à matéria selecionada; links sem matéria continuam isolados. A associação opcional de um assunto não gera bônus de prioridade, mas continua relevante aos critérios rigorosos de domínio da v0.6.
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@
+ 
+ [project]
+ name = "estudo-adaptativo"
+-version = "0.7.0"
++version = "0.8.0"
+ description = "Revisão adaptativa e caderno de erros para concursos"
+ requires-python = ">=3.11"
+ dependencies = [
+diff --git a/scripts/smoke_navegador.py b/scripts/smoke_navegador.py
+--- a/scripts/smoke_navegador.py
++++ b/scripts/smoke_navegador.py
+@@ -35,7 +35,7 @@
+   page.on('console',lambda m:errors.append('console '+m.text) if m.type=='error' else None)
+   page.expose_function('bridge',bridge)
+   html=(root/'app/static/index.html').read_text()
+-  html=html.replace('<link rel="stylesheet" href="/static/style.css?v=7">','').replace('<script src="/static/app.js?v=7" defer></script>','')
++  html=html.replace('<link rel="stylesheet" href="/static/style.css?v=8">','').replace('<script src="/static/app.js?v=8" defer></script>','')
+   page.set_content(html,wait_until='domcontentloaded')
+   page.add_style_tag(content=(root/'app/static/style.css').read_text())
+   page.evaluate('''window.fetch=async (path,init={})=>{const result=await window.bridge({url:path,method:init.method||'GET',body:init.body||null});return new Response(result.body,{status:result.status,headers:{'Content-Type':'application/json'}});}''')
+diff --git a/tests/test_catalog_management_v5.py b/tests/test_catalog_management_v5.py
+--- a/tests/test_catalog_management_v5.py
++++ b/tests/test_catalog_management_v5.py
+@@ -77,7 +77,7 @@
+     assert 'id="subjectDialog"' in html and 'id="topicDialog"' in html
+     assert 'id="questionEditorDialog"' in html and 'id="reviewDialog"' in html
+     assert 'id="attemptDialog"' in html and 'id="newSubject"' in html
+-    assert '/static/app.js?v=7' in html
++    assert '/static/app.js?v=8' in html
+     assert client.get('/static/app.js').headers.get('cache-control')=='no-store'
+     js=client.get('/static/app.js').text
+     for route in ['/subjects/', '/topics/', '/questions/', '/topic-reviews','/question-attempts']:
+diff --git a/tests/test_semi_novel_risk_v8.py b/tests/test_semi_novel_risk_v8.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_semi_novel_risk_v8.py
+@@ -0,0 +1,122 @@
++"""v0.8: risco limitado, evidência enviesada e métricas sem vazamento entre matérias."""
++from datetime import datetime, timedelta, timezone
++
++from sqlalchemy import select
++
++from app.db import get_db
++from app.engine import (adjusted_risk, build_queue, empirical_risk_adjustment, ranking_score,
++                        semi_novel_progress, question_interval, question_forgetting_risk)
++from app.models import Question, QuestionAttempt, TopicReview
++
++NOW = datetime(2026, 11, 18, 18, 0, tzinfo=timezone.utc)
++
++
++def test_risk_bonus_is_bounded_and_base_formula_is_unchanged(client):
++    subject = client.post('/api/subjects', json={'name': 'Português'}).json()['id']
++    topic = client.post('/api/topics', json={'subject_id': subject, 'title': 'Crase', 'importance': 4}).json()['id']
++    sid = client.post('/api/sessions').json()['id']
++    client.post(f'/api/sessions/{sid}/topic-reviews', json={'topic_id': topic, 'grade': 2, 'difficulty': 3})
++    result = client.get(f'/api/queue?subject_id={subject}').json()['topics'][0]
++    components = result['priority_components']
++    expected = round(.35*components['D']+.30*components['T']+.25*components['E']+.10*components['I'], 2)
++    assert result['priority'] == expected
++    assert 0 <= result['risk_priority_bonus'] <= 8
++    assert result['ranking_score'] == min(100, round(expected + result['risk_priority_bonus'], 2))
++    assert ranking_score(100, 100) == (100, 8)
++    assert ranking_score(10, None) == (10, 0)
++
++
++def test_tag_does_not_change_priority_but_changes_mastery_evidence(client):
++    sub = client.post('/api/subjects', json={'name': 'Matemática'}).json()['id']
++    topic = client.post('/api/topics', json={'subject_id': sub, 'title': 'Juros'}).json()['id']
++    question = client.post('/api/questions', json={'subject_id': sub, 'url': 'https://example.org/juros'}).json()
++    before = client.get(f'/api/queue?subject_id={sub}').json()['topics'][0]
++    modified = client.patch(f"/api/questions/{question['id']}", json={
++        'subject_id': sub, 'topic_id': topic, 'url': 'https://example.org/juros',
++    })
++    assert modified.status_code == 200
++    after = client.get(f'/api/queue?subject_id={sub}').json()['topics'][0]
++    assert before['priority'] == after['priority']
++    assert before['ranking_score'] == after['ranking_score']
++    assert after['mastery_evidence']['distinct_questions'] == 0
++    sid = client.post('/api/sessions').json()['id']
++    client.post(f'/api/sessions/{sid}/question-attempts', json={
++        'question_id': question['id'], 'is_correct': False, 'confidence': 1, 'error_type': 'concept',
++    })
++    later = client.get(f'/api/queue?subject_id={sub}').json()['topics'][0]
++    assert later['mastery_evidence']['distinct_questions'] == 1
++    assert later['mastery_evidence']['pending_concept_errors'] == 1
++    assert later['priority'] == before['priority']
++
++
++def test_semi_novel_requires_spaced_attempts_on_distinct_links():
++    questions = [Question(id=1), Question(id=2), Question(id=3)]
++    def event(q, days, correct, confidence=3):
++        return QuestionAttempt(question_id=q, is_correct=correct, confidence=confidence,
++                               created_at=NOW-timedelta(days=days))
++    history = {
++        1: [event(1, 29, False), event(1, 20, True), event(1, 9, True)],
++        2: [event(2, 20, False), event(2, 10, True, confidence=2)],
++        3: [event(3, 2, True)],
++    }
++    progress = semi_novel_progress(questions, history, NOW)
++    assert progress['registered'] == 3
++    assert progress['reviewed_in_app'] == 3
++    assert progress['spaced_distinct'] == 2
++    assert progress['spaced_secure'] == 1
++    assert progress['spaced_secure_percent'] == 50
++    assert progress['sufficient_sample'] is False
++    assert progress['trend_pp'] is None
++    assert progress['target_percent'] == 90
++    assert 'não estima nota' in progress['interpretation']
++
++
++def test_semi_novel_separates_subjects_and_displays_no_invented_zero(client):
++    a = client.post('/api/subjects', json={'name': 'Português'}).json()['id']
++    b = client.post('/api/subjects', json={'name': 'Matemática'}).json()['id']
++    qa = client.post('/api/questions', json={'subject_id': a, 'url': 'https://example.com/a'}).json()['id']
++    qb = client.post('/api/questions', json={'subject_id': b, 'url': 'https://example.com/b'}).json()['id']
++    sid = client.post('/api/sessions').json()['id']
++    client.post(f'/api/sessions/{sid}/question-attempts', json={
++        'question_id': qa, 'is_correct': False, 'confidence': 1})
++    client.post(f'/api/sessions/{sid}/refresh')
++    second_session = client.post('/api/sessions').json()['id']
++    with next(client.app.dependency_overrides[get_db]()) as db:
++        for q in db.scalars(select(QuestionAttempt)).all():
++            q.created_at = NOW - timedelta(days=10)
++        db.add(QuestionAttempt(question_id=qa, session_id=second_session, is_correct=True, confidence=3,
++                               created_at=NOW))
++        db.commit()
++        a_progress = build_queue(db, NOW, subject_id=a)['semi_novel_progress']
++        b_progress = build_queue(db, NOW, subject_id=b)['semi_novel_progress']
++    assert (a_progress['registered'], a_progress['spaced_distinct'], a_progress['spaced_secure_percent']) == (1, 1, 100)
++    assert (b_progress['registered'], b_progress['spaced_distinct'], b_progress['spaced_secure_percent']) == (1, 0, None)
++
++
++def test_empirical_adjustment_requires_sufficient_subject_history():
++    def attempt(days, correct):
++        return QuestionAttempt(is_correct=correct, confidence=3,
++                               created_at=NOW-timedelta(days=days))
++    small = [[attempt(10, True), attempt(2, False)] for _ in range(5)]
++    bias, samples = empirical_risk_adjustment(small, question_interval, question_forgetting_risk,
++                                               lambda r: not r.is_correct, NOW)
++    assert samples == 5 and bias == 0
++    big = small + [[attempt(14, True), attempt(2, False)] for _ in range(35)]
++    bias, samples = empirical_risk_adjustment(big, question_interval, question_forgetting_risk,
++                                               lambda r: not r.is_correct, NOW)
++    assert samples == 40
++    assert 0 < bias <= 0.12
++    assert adjusted_risk(95, bias) <= 100
++
++
++def test_ui_and_api_label_biased_data_and_avoid_fake_exam_projection(client):
++    html = client.get('/').text
++    js = client.get('/static/app.js').text
++    assert 'id="semiNovelProgress"' in html
++    assert 'questões variadas (não precisam ser inéditas)' in html
++    assert 'Não prevê nota na prova' in js
++    assert 'ranking_score' in js
++    assert '/static/app.js?v=8' in html
++    sub = client.post('/api/subjects', json={'name': 'Conhecimentos Bancários'}).json()['id']
++    summary = client.get(f'/api/queue?subject_id={sub}').json()['semi_novel_progress']
++    assert summary['spaced_secure_percent'] is None
