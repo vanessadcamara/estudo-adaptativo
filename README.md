@@ -1,16 +1,27 @@
-# Estudo Adaptativo BB — versão 0.5
+# Estudo Adaptativo BB — versão 0.6
 
 Sistema pessoal de revisão adaptativa para **Banco do Brasil — Escriturário (Agente Comercial)**. A interface tem **três abas**: Cards, Caderno de erros e Configurações. Sem cronômetro, sem cotas diárias e sem calendário obrigatório.
 
 A aplicação entrega o frontend pelo próprio **FastAPI** e persiste revisões, tentativas e sessões no **PostgreSQL** (local ou Neon). Login com senha Argon2, sessão protegida por cookie e controle CSRF.
 
-## Novidades da v0.5 — telas funcionais e persistência
+## Novidades da v0.6 — regras estritas de priorização e domínio
+
+- **Fórmula exata dos Cards:** `P = 0,35D + 0,30T + 0,25E + 0,10I`, com cada componente em **0 a 100**. O resultado aparece no card e pode ser auditado expandindo **Entender prioridade e critérios de domínio**. **Não há bônus fora da fórmula.**
+- **Manutenção obrigatória acima do peso:** se o prazo individual de um assunto vencer, ele ocupa o topo da pilha antes de qualquer não vencido, mesmo com `P` menor. Entre vencidos, maior atraso tem precedência; a pontuação desempata. Intervalos são individualizados entre **1 e 60 dias**, com limite conservador de **30 dias enquanto não houver domínio confirmado**.
+- **Três estados explícitos:** Em aprendizagem, Em consolidação, Dominado. São derivados exclusivamente das avaliações persistidas e de tentativas vinculadas ao assunto.
+- **Critérios rigorosos de domínio:** 3 notas 4 consecutivas, espaçadas em intervalos crescentes incluindo pelo menos 14 dias; **pelo menos 5 questões distintas e 8 tentativas**, taxa final de **85% ou mais**, sem erros conceituais graves pendentes; confirmação explícita de que explicou sem consulta e aplicou o conteúdo a questões inéditas/variadas. O último resultado de cada link conta para a taxa, evitando repetição inflar domínio.
+- **Evidência explícita:** o questionário de Cards inclui duas opções novas: explicar sem consulta e aplicar a questões inéditas e variadas. A aplicação **não presume** que uma questão seja inédita nem interpreta seu conteúdo automaticamente; esse aspecto depende da sua confirmação. Para atingir `Dominado`, é necessário vincular questões ao assunto no cadastro.
+- **Erros conceituais pendentes:** um erro marcado `Conceito` só é considerado resolvido após novo acerto com confiança `Estava segura` para a mesma questão. Uma lacuna grave declarada no Card só é resolvida por uma nova avaliação satisfatória com explicação sem consulta.
+- **Histórico preservado:** a migração `0006_mastery_evidence.py` adiciona duas colunas booleanas sem apagar registros; avaliações antigas recebem `false` nesses campos e não viram evidência por suposição.
+- **Caderno de erros:** a pontuação da pilha também é exibida em escala 0–100; questões com prazo vencido ganham prioridade sobre não vencidas. A fórmula de Cards **não é aplicada às questões**, que continuam com métricas próprias de erros e confiança.
+
+## Frontend funcional e persistência (v0.5)
 
 - **Cadastros que abrem de verdade:** ao tocar em `Nova matéria`, `Novo assunto` ou `Cadastrar questão`, o navegador abre um formulário em janela própria. Salvar aciona a API e persiste o registro em PostgreSQL.
 - **Gerenciamento completo:** matérias, assuntos e links têm **Editar**, **Arquivar** e **Restaurar** (o último aparece com `Exibir arquivados`). O arquivamento é reversível e mantém os eventos históricos.
 - **Telas próprias de avaliação:** `Marcar como finalizado` abre o questionário de Cards; `Avaliar desempenho` abre o formulário da questão. `Enviar respostas` persiste e atualiza a pilha.
 - **Estados vazios clicáveis:** se o Neon estiver sem matérias/assuntos/links, cada tela oferece um botão para iniciar o cadastro. Nada é criado automaticamente em nome da usuária.
-- **Atualização confiável:** scripts/CSS versionados (`?v=5`) e `Cache-Control: no-store` para estáticos evitam continuar vendo um frontend antigo.
+- **Atualização confiável:** scripts/CSS versionados (`?v=6`) e `Cache-Control: no-store` para estáticos evitam continuar vendo um frontend antigo.
 - **Persistência explícita:** todas as ações de criação, edição, arquivo/restauração, revisão e tentativa usam o banco configurado em `DATABASE_URL`. `Refresh` fecha somente o lote técnico; não exclui avaliações.
 
 ### Primeiro uso — banco vazio
@@ -55,7 +66,7 @@ O próprio FastAPI serve os arquivos em `app/static`. A aplicação funciona com
    git push origin master
    ```
 3. O serviço `estudo-adaptativo-bb`, já conectado à branch **master**, deve detectar o push e começar o deploy. Acompanhe o status no [Render Dashboard](https://dashboard.render.com/web/srv-dbunfkpsrm7s73feeqrg).
-4. O `startCommand` existente (`alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`) aplica automaticamente a migração **0005**, que adiciona arquivamento reversível a matérias e tópicos sem apagar dados. As migrações anteriores também são mantidas.
+4. O `startCommand` existente (`alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`) aplica automaticamente a migração **0006**, que registra as confirmações de explicação sem consulta e aplicação em questões inéditas sem apagar dados. As migrações anteriores também são mantidas.
 5. Quando estiver `Live`, acesse [a aplicação](https://estudo-adaptativo-bb.onrender.com/) e teste o login e as duas filas.
 
 **Não** crie um novo banco ou serviço no Render para atualizar esse projeto. Use o Neon e serviço atuais. Antes de uma alteração em produção, faça backup dos dados importantes; não execute `alembic downgrade base`.
@@ -142,4 +153,4 @@ O Render Free pode suspender serviços ociosos; consulte o painel para os limite
 python -m pytest -q
 ```
 
-São **23 testes automatizados**, além do teste de navegação real em Chromium (script `scripts/smoke_navegador.py`), para autenticação, CSRF, preservação de histórico, filas completas, feedback e intervalos, arquivamento/restauração, sugestão conservadora e estrutura da interface. Os testes usam SQLite em memória; produção usa PostgreSQL. Migração **0005** é necessária para a nova gestão de matérias e assuntos.
+São **31 testes automatizados**, além do teste de navegação real em Chromium (script `scripts/smoke_navegador.py`), para autenticação, CSRF, preservação de histórico, filas completas, feedback e intervalos, arquivamento/restauração, sugestão conservadora e estrutura da interface. Os testes usam SQLite em memória; produção usa PostgreSQL. Migração **0006** é necessária para persistir as novas evidências de domínio; a gestão de matérias e assuntos permanece na migração **0005**.

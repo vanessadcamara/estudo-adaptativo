@@ -9,3 +9,12 @@
 .login-shell{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}.login-card{width:min(100%,440px)}.login-card h1{font-size:28px;margin:10px 0}.login-card p{font-size:13px;color:var(--muted);line-height:1.5}.login-card .stack-form{display:grid;gap:17px;margin-top:24px}.login-card .stack-form label{font-size:12px;color:#62708a;font-weight:750;display:grid;gap:7px}.login-card .stack-form input{padding:13px;border:1px solid var(--line);border-radius:9px}.login-card .hint{margin-top:18px}.login-card .message{margin-top:16px}
 @media(max-width:820px){.settings-grid{grid-template-columns:1fr}.panel-head{flex-wrap:wrap}.radio-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:540px){.shell{padding:20px 14px 42px}.brand h1{font-size:16px}.brand-icon{height:37px;width:37px}.account-badge{display:none}.header{align-items:start}.tabs{gap:0}.tab{padding:12px 11px;font-size:12px}.toolbar{align-items:stretch;flex-direction:column}.filter-field,.toolbar .button{width:100%}.study-card{padding:22px 20px}.panel{padding:19px}.panel-head{flex-direction:column;align-items:stretch}.panel-head .button{align-self:start}.list-item{align-items:start;flex-direction:column}.item-actions{justify-content:start}.dialog-form{padding:22px 18px}.dialog-actions .button{flex:1}.two-fields,.radio-grid{grid-template-columns:1fr}.navigator .button{padding:10px}}
+
+/* Domínio — explicações detalhadas só quando a estudante solicitar. */
+.mastery-details{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0;color:var(--ink);background:#fff}
+.mastery-details summary{cursor:pointer;font-size:.9rem;font-weight:600}
+.mastery-details p{font-size:.88rem;line-height:1.55;color:var(--muted);margin:10px 0}
+.mastery-checklist{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:7px;font-size:.87rem}
+.checkbox-stack{display:grid;gap:10px;margin:6px 0 10px}
+.checkbox-row{display:flex;align-items:start;gap:10px;line-height:1.45;cursor:pointer}
+.checkbox-row input{margin-top:4px;flex-shrink:0}

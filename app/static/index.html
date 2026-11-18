@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8fc">
   <title>Estudo Adaptativo BB · Pilhas contínuas</title>
-  <link rel="stylesheet" href="/static/style.css?v=5">
-  <script src="/static/app.js?v=5" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=6">
+  <script src="/static/app.js?v=6" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -66,7 +66,7 @@
         </div>
       </section>
     </main>
-    <footer>Estudo Adaptativo BB · v0.5 · Tudo o que você salvar permanece no PostgreSQL</footer>
+    <footer>Estudo Adaptativo BB · v0.6 · Tudo o que você salvar permanece no PostgreSQL</footer>
   </div>
 
   <dialog class="editor-dialog" id="subjectDialog" aria-labelledby="subjectDialogTitle">
@@ -107,6 +107,13 @@
       </div></fieldset>
       <fieldset class="question-block"><legend>2. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
       <fieldset class="question-block"><legend>3. Ficou alguma lacuna conceitual importante?</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="critical_gap" value="false" required>Não</label><label class="radio-row"><input type="radio" name="critical_gap" value="true" required>Sim</label></div></fieldset>
+      <fieldset class="question-block"><legend>4. Evidências adicionais (marque somente se for verdade)</legend>
+        <div class="checkbox-stack">
+          <label class="checkbox-row"><input type="checkbox" name="explained_without_consulting"> Consegui explicar o assunto e suas diferenças sem consultar o material.</label>
+          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto em questões inéditas e variadas.</label>
+        </div>
+        <p class="panel-help">As confirmações serão salvas com a avaliação; não substituem as revisões espaçadas e os acertos exigidos.</p>
+      </fieldset>
       <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
       <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>
     </form>

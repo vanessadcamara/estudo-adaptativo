@@ -24,7 +24,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.5.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.6.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -322,7 +322,9 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
         raise HTTPException(404, "Assunto ativo não encontrado.")
     entry = TopicReview(session_id=session_id, topic_id=payload.topic_id,
                         grade=payload.grade, difficulty=payload.difficulty,
-                        critical_gap=payload.critical_gap, notes=payload.notes)
+                        critical_gap=payload.critical_gap,
+                        explained_without_consulting=payload.explained_without_consulting,
+                        applied_to_new_questions=payload.applied_to_new_questions, notes=payload.notes)
     db.add(entry)
     try:
         db.commit()

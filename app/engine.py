@@ -1,7 +1,8 @@
-"""Filas adaptativas: eventos reais, manutenção espaçada e cobertura completa.
+"""Revisão adaptativa contínua, evidências de domínio e manutenção obrigatória.
 
-Nunca cria faltas, notas, tentativas ou cronômetros para itens que não foram avaliados.
-Atualiza prioridade com o tempo transcorrido, mesmo após semanas sem estudar.
+Fórmula exclusiva dos Cards: P = 0,35D + 0,30T + 0,25E + 0,10I,
+com D, T, E e I sempre entre 0 e 100. A manutenção vencida é uma regra
+lexicográfica ANTERIOR à pontuação; não altera os pesos da fórmula.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -24,48 +25,51 @@ def elapsed_days(then: datetime | None, now: datetime) -> float | None:
 def grade4_streak(records: list[TopicReview]) -> int:
     count = 0
     for record in reversed(records):
-        if record.grade != 4 or getattr(record, 'critical_gap', False):
+        if record.grade != 4 or bool(getattr(record, 'critical_gap', False)):
             break
         count += 1
     return count
 
 
+def spaced_recoveries(records: list[TopicReview]) -> bool:
+    """Três notas 4 em datas distintas, intervalos crescentes e último >= 14 dias."""
+    if grade4_streak(records) < 3:
+        return False
+    # O intervalo cronológico é avaliado nas 3 últimas recuperações consecutivas.
+    a, b, c = records[-3:]
+    first = elapsed_days(a.created_at, aware(b.created_at)) or 0.0
+    second = elapsed_days(b.created_at, aware(c.created_at)) or 0.0
+    return first >= 1.0 and second >= 14.0 and second > first
+
+
 def topic_interval(records: list[TopicReview]) -> int:
-    """Revisão após 1–60 dias; não elimina tópicos consolidados."""
+    """Intervalo de manutenção individual (1 a 60 dias)."""
     if not records:
         return 1
     last = records[-1]
-    if getattr(last, 'critical_gap', False):
+    if bool(getattr(last, 'critical_gap', False)):
         return 1
     if last.grade <= 2:
         base = (1, 2, 4)[last.grade]
     elif last.grade == 3:
         base = 7
+    elif spaced_recoveries(records):
+        base = 60
     else:
-        streak = grade4_streak(records)
-        # Três notas 4 no mesmo dia não equivalem a memória consolidada.
-        if streak >= 3:
-            last_three = records[-3:]
-            first_gap = elapsed_days(last_three[0].created_at, aware(last_three[1].created_at)) or 0
-            second_gap = elapsed_days(last_three[1].created_at, aware(last_three[2].created_at)) or 0
-            sufficiently_spaced = first_gap >= 1 and second_gap >= 14 and second_gap > first_gap
-            base = 60 if sufficiently_spaced else 30
-        else:
-            base = 30 if streak == 2 else 14
-    difficulty = getattr(last, 'difficulty', None)
-    if difficulty == 3:
-        return max(1, (base + 1) // 2)
-    return min(60, base)
+        base = 30 if grade4_streak(records) >= 2 else 14
+    if getattr(last, 'difficulty', None) == 3:
+        base = (base + 1) // 2
+    return min(60, max(1, base))
 
 
 def question_interval(records: list[QuestionAttempt]) -> int:
-    """Acertos com pouca confiança não são tratados como domínio."""
+    """Acerto inseguro não autoriza espaçamento longo."""
     if not records or not records[-1].is_correct:
         return 1
-    last_confidence = getattr(records[-1], 'confidence', None)
-    if last_confidence == 1:
+    confidence = getattr(records[-1], 'confidence', None)
+    if confidence == 1:
         return 1
-    if last_confidence == 2:
+    if confidence == 2:
         return 2
     streak = 0
     for record in reversed(records):
@@ -75,43 +79,113 @@ def question_interval(records: list[QuestionAttempt]) -> int:
     return (3, 7, 14, 30, 60)[min(max(0, streak - 1), 4)]
 
 
-def is_topic_mastered(records: list[TopicReview], attempts: list[QuestionAttempt]) -> bool:
-    """Exige domínio demonstrado em sessões espaçadas + questões variadas."""
-    if len(records) < 3 or grade4_streak(records) < 3:
-        return False
-    last_three = records[-3:]
-    first_gap = elapsed_days(last_three[0].created_at, aware(last_three[1].created_at)) or 0
-    second_gap = elapsed_days(last_three[1].created_at, aware(last_three[2].created_at)) or 0
-    if first_gap < 1 or second_gap < 14 or second_gap <= first_gap:
-        return False
+def pending_topic_gap(records: list[TopicReview]) -> bool:
+    """Uma lacuna crítica só é resolvida por nova explicação segura sem lacunas."""
+    pending = False
+    for record in records:
+        if getattr(record, 'critical_gap', False):
+            pending = True
+        elif pending and record.grade >= 3 and getattr(record, 'explained_without_consulting', False):
+            pending = False
+    return pending
+
+
+def pending_concept_errors(attempts: list[QuestionAttempt]) -> int:
+    """Erros conceituais vinculados deixam de ser pendentes após acerto seguro posterior."""
+    pending: dict[int, bool] = {}
+    for attempt in attempts:
+        if not attempt.is_correct and getattr(attempt, 'error_type', None) == 'concept':
+            pending[attempt.question_id] = True
+        elif attempt.is_correct and getattr(attempt, 'confidence', None) == 3:
+            pending[attempt.question_id] = False
+    return sum(bool(value) for value in pending.values())
+
+
+def mastery_evidence(records: list[TopicReview], attempts: list[QuestionAttempt]) -> dict[str, Any]:
+    """Portões verificáveis para afirmar domínio — nunca inferir a evidência ausente."""
+    last = records[-1] if records else None
+    streak_ok = grade4_streak(records) >= 3
+    spaced_ok = spaced_recoveries(records)
+    # Usa apenas o último resultado de cada questão diferente, evitando que
+    # repetir o mesmo link infle artificialmente a amostra de acertos.
     last_by_question: dict[int, QuestionAttempt] = {}
     for attempt in attempts:
         last_by_question[attempt.question_id] = attempt
-    if len(last_by_question) < 5 or len(attempts) < 8:
-        return False
-    confident_correct = sum(int(r.is_correct and getattr(r, 'confidence', None) != 1)
-                            for r in last_by_question.values())
-    rate = confident_correct / len(last_by_question)
-    return rate >= 0.85 and all(r.grade >= 3 and not getattr(r, 'critical_gap', False)
-                                for r in last_three)
+    distinct_count = len(last_by_question)
+    correct_count = sum(int(r.is_correct and getattr(r, 'confidence', None) in (2, 3))
+                        for r in last_by_question.values())
+    rate = correct_count / distinct_count if distinct_count else 0.0
+    sample_ok = distinct_count >= 5 and len(attempts) >= 8 and rate >= 0.85
+    pending_concepts = pending_concept_errors(attempts)
+    critical_clear = not pending_topic_gap(records) and pending_concepts == 0
+    explained = bool(last and getattr(last, 'explained_without_consulting', False) and last.grade == 4)
+    # Diversidade e ineditismo não são dedutíveis dos links sem acessar o conteúdo.
+    # Solicitamos confirmação explícita; não fingimos classificá-los automaticamente.
+    novel_applied = bool(last and getattr(last, 'applied_to_new_questions', False))
+    checks = {
+        'three_grade_fours': streak_ok,
+        'spaced_recoveries': spaced_ok,
+        'varied_questions_85_percent': sample_ok,
+        'no_critical_gaps': critical_clear,
+        'explained_without_consulting': explained,
+        'applied_to_new_questions': novel_applied,
+    }
+    return {
+        **checks,
+        'mastered': all(checks.values()),
+        'question_accuracy_percent': round(100 * rate, 1) if distinct_count else None,
+        'distinct_questions': distinct_count,
+        'total_question_attempts': len(attempts),
+        'pending_concept_errors': pending_concepts,
+        'grade_four_streak': grade4_streak(records),
+    }
+
+
+def is_topic_mastered(records: list[TopicReview], attempts: list[QuestionAttempt]) -> bool:
+    return mastery_evidence(records, attempts)['mastered']
+
+
+def topic_state(records: list[TopicReview], evidence: dict[str, Any]) -> str:
+    if evidence['mastered']:
+        return 'dominado'
+    if not records:
+        return 'em_aprendizagem'
+    last = records[-1]
+    if last.grade <= 2 or not evidence['no_critical_gaps']:
+        return 'em_aprendizagem'
+    return 'em_consolidacao'
+
+
+def topic_priority_components(topic: Topic, history: list[TopicReview], days: float | None, interval: int) -> dict[str, float]:
+    """Componentes normalizados 0–100, nenhum bônus externo à fórmula."""
+    last = history[-1] if history else None
+    recall_difficulty = (4 - last.grade) * 25.0 if last else 50.0
+    perceived = (last.difficulty - 1) * 50.0 if last and last.difficulty else recall_difficulty
+    difficulty = 0.78 * recall_difficulty + 0.22 * perceived
+    temporal = min(100.0, (days / interval) * 100.0) if days is not None else 0.0
+    forget_count = sum(r.grade <= 2 or bool(getattr(r, 'critical_gap', False)) for r in history)
+    forgetfulness = 100 * forget_count / len(history) if history else 50.0
+    importance = (topic.importance - 1) * 25.0  # escala cadastrada 1–5
+    return {k: round(max(0.0, min(100.0, v)), 2) for k, v in {
+        'D': difficulty, 'T': temporal, 'E': forgetfulness, 'I': importance
+    }.items()}
 
 
 def build_queue(db: Session, now: datetime | None = None, exclude_session_id: int | None = None,
                 topic_minutes: int | None = None, question_minutes: int | None = None) -> dict[str, Any]:
-    """Por padrão retorna o acervo INTEIRO, ordenado, sem corte por minutos.
+    """Todos os itens na fila contínua; atrasos obrigatórios vêm antes dos demais.
 
-    Limites por minutos só existem para compatibilidade com clientes anteriores
-    que os solicitarem explicitamente. Não há relógio nem duração obrigatória.
+    `topic_minutes`/`question_minutes` são apenas compatibilidade com clientes
+    antigos. A UI não usa cronômetro nem impõe limites de tempo.
     """
     for value in (topic_minutes, question_minutes):
         if value is not None and not (0 <= value <= 180):
-            raise ValueError("Tempo de fila inválido.")
+            raise ValueError('Tempo de fila inválido.')
     now = aware(now or datetime.now(timezone.utc))
     active_subject_ids = set(db.scalars(select(Subject.id).where(Subject.archived_at.is_(None))).all())
     all_topics = db.scalars(select(Topic).order_by(Topic.id)).all()
     topics = [t for t in all_topics if t.archived_at is None and t.subject_id in active_subject_ids]
     active_topic_ids = {t.id for t in topics}
-    # Questões de matérias/assuntos arquivados também saem da pilha, sem perder histórico.
     questions = db.scalars(select(Question).order_by(Question.id)).all()
     active_questions = [q for q in questions if q.archived_at is None
                         and (q.subject_id is None or q.subject_id in active_subject_ids)
@@ -143,46 +217,42 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         last = history[-1] if history else None
         reference = last.created_at if last else latest_study.get(topic.id)
         days = elapsed_days(reference, now)
-        interval = topic_interval(history)
-        ratio = 1.0 if days is None else days / interval
-        due = ratio >= 1.0
-        # Sem primeira nota, assunto fica disponível, mas pode estar em espera
-        # de 1 dia se a estudante marcou que acabou de vê-lo na aula.
-        recall_difficulty = (4 - last.grade) / 4 if last else 0.50
-        perceived = ((last.difficulty - 1) / 2) if last and last.difficulty else recall_difficulty
-        difficulty = 0.78 * recall_difficulty + 0.22 * perceived
-        gaps = sum(r.grade <= 2 or getattr(r, 'critical_gap', False) for r in history) / len(history) if history else 0.40
-        overdue = min(1, ratio / 3)
-        # A frequência histórica ajuda, mas um tópico ainda não visto ganha
-        # bônus de cobertura; repetição de um tópico nunca apaga outros.
-        coverage = 0.05 / (1 + len(history))
-        gap_bonus = 0.12 if last and last.critical_gap else 0
-        priority = min(1.0, 0.33*difficulty + 0.30*overdue + 0.23*gaps +
-                       0.09*topic.importance/5 + coverage + gap_bonus)
-        mastered = is_topic_mastered(history, question_by_topic[topic.id])
+        evidence = mastery_evidence(history, question_by_topic[topic.id])
+        mastered = evidence['mastered']
+        # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
+        interval = topic_interval(history) if mastered else min(30, topic_interval(history))
+        overdue_days = max(0.0, days - interval) if days is not None else 0.0
+        maintenance_required = days is not None and days >= interval
+        components = topic_priority_components(topic, history, days, interval)
+        priority = round(0.35 * components['D'] + 0.30 * components['T'] +
+                         0.25 * components['E'] + 0.10 * components['I'], 2)
+        state = topic_state(history, evidence)
         if not history and reference is None:
-            reason = 'Ainda não estudado — disponível para começar'
+            reason = 'Assunto novo — primeira avaliação disponível'
         elif not history:
-            reason = 'Primeira revisão após a aula' if due else 'Primeira revisão programada'
-        elif last and last.critical_gap:
-            reason = 'Lacuna conceitual — reforçar a explicação'
-        elif due:
-            reason = 'Revisão vencida — memória precisa de reforço'
+            reason = 'Primeira revisão após estudo inicial' if maintenance_required else 'Primeira revisão programada'
+        elif maintenance_required:
+            reason = 'Revisão obrigatória: intervalo de manutenção atingido'
+        elif not evidence['no_critical_gaps']:
+            reason = 'Erro conceitual pendente — reforçar antes de avançar'
         elif mastered:
-            reason = 'Domínio em manutenção espaçada'
+            reason = 'Domínio comprovado — manutenção espaçada'
         else:
-            reason = 'Manutenção programada'
+            reason = 'Consolidação e revisões espaçadas'
         next_due = (aware(reference) + timedelta(days=interval)).isoformat() if reference else None
         topic_queue.append({
-            'id':topic.id, 'subject_id':topic.subject_id,'code':topic.code,'title':topic.title,
-            'grade':last.grade if last else None,'difficulty':last.difficulty if last else None,
-            'critical_gap':bool(last.critical_gap) if last else False,
-            'attempts':len(history),'days_since':round(days,1) if days is not None else None,
-            'interval_days':interval,'due':due,'mastered':mastered,'priority':round(priority,4),
-            'next_due_at':next_due,'reason':reason,
+            'id': topic.id, 'subject_id': topic.subject_id, 'code': topic.code, 'title': topic.title,
+            'grade': last.grade if last else None, 'difficulty': last.difficulty if last else None,
+            'critical_gap': bool(last.critical_gap) if last else False,
+            'attempts': len(history), 'days_since': round(days, 1) if days is not None else None,
+            'interval_days': interval, 'due': maintenance_required,
+            'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
+            'mastered': mastered, 'learning_state': state, 'mastery_evidence': evidence,
+            'priority': priority, 'priority_components': components,
+            'next_due_at': next_due, 'reason': reason,
         })
 
-    topic_subjects = {t.id:t.subject_id for t in topics}
+    topic_subjects = {t.id: t.subject_id for t in topics}
     question_queue = []
     for q in active_questions:
         history = by_question[q.id]
@@ -191,11 +261,10 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         last = history[-1] if history else None
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
-        ratio = 1.0 if days is None else days / interval
-        due = ratio >= 1.0
+        ratio = days / interval if days is not None else 0.0
+        maintenance_required = days is not None and days >= interval
         correct = sum(int(r.is_correct) for r in history)
         errors = len(history) - correct
-        # Acerto chutado e acerto incerto valem menos para estimar domínio.
         effective_correct = sum((1 if r.confidence in (3, None) else (0.65 if r.confidence == 2 else 0.25))
                                 for r in history if r.is_correct)
         smoothed_success = (effective_correct + 1) / (len(history) + 2)
@@ -203,13 +272,10 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         repeated_errors = sum(not r.is_correct for r in history[-3:]) >= 2
         uncertainty = 2 / (len(history) + 2)
         overdue = min(1, ratio / 3)
-        # A pilha considera necessidade de reforço, incerteza, tempo sem rever
-        # e cobertura de todo o caderno. A prioridade muda a cada avaliação.
-        priority = min(1.0, 0.36*(1-smoothed_success) + 0.19*wrong_rate +
-                       0.29*overdue + 0.09*uncertainty +
-                       (0.12 if repeated_errors else 0.0) + 0.07/(1+len(history)))
-        # Somente sugere arquivar após acertos seguros, repetidos e espaçados.
-        # Jamais arquiva automaticamente; a decisão é da estudante.
+        raw_priority = min(1.0, 0.36 * (1 - smoothed_success) + 0.19 * wrong_rate +
+                           0.29 * overdue + 0.09 * uncertainty +
+                           (0.12 if repeated_errors else 0.0) + 0.07 / (1 + len(history)))
+        priority = round(raw_priority * 100, 2)
         recent = history[-4:]
         archive_suggested = (
             len(history) >= 6 and len(recent) == 4 and
@@ -218,45 +284,51 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             (elapsed_days(recent[0].created_at, aware(recent[-1].created_at)) or 0) >= 14
         )
         if archive_suggested:
-            reason = 'Questão dominada — considere retirá-la da pilha'
-        else:
-            reason = None
-        if reason is None and repeated_errors:
+            reason = 'Questão dominada — considere arquivá-la'
+        elif repeated_errors:
             reason = 'Erros recorrentes — revisar o conceito'
-        elif reason is None and last and last.is_correct and last.confidence == 1:
+        elif last and last.is_correct and last.confidence == 1:
             reason = 'Acerto com chute — não consolidado'
-        elif reason is None and not history:
+        elif not history:
             reason = 'Questão ainda não reavaliada'
-        elif reason is None and due:
-            reason = 'Retomar questão para reforçar a memória'
-        elif reason is None:
+        elif maintenance_required:
+            reason = 'Revisão obrigatória: prazo de manutenção atingido'
+        else:
             reason = 'Manutenção espaçada'
-        next_due = (aware(last.created_at)+timedelta(days=interval)).isoformat() if last else None
+        next_due = (aware(last.created_at) + timedelta(days=interval)).isoformat() if last else None
         question_queue.append({
-            'id':q.id,'subject_id':q.subject_id or topic_subjects.get(q.topic_id),
-            'topic_id':q.topic_id,'url':q.url,'statement':q.statement,
-            'attempts':len(history),'correct':correct,'errors':errors,
-            'last_correct':last.is_correct if last else None,
-            'last_confidence':last.confidence if last else None,
-            'days_since':round(days,1) if days is not None else None,
-            'interval_days':interval,'due':due,'priority':round(priority,4),
-            'next_due_at':next_due,'reason':reason,
-            'archive_suggested':archive_suggested,
-            'archive_reason':('Últimos 4 acertos com segurança, em revisões espaçadas, e pelo menos 80% de acerto no histórico.' if archive_suggested else None),
+            'id': q.id, 'subject_id': q.subject_id or topic_subjects.get(q.topic_id),
+            'topic_id': q.topic_id, 'url': q.url, 'statement': q.statement,
+            'attempts': len(history), 'correct': correct, 'errors': errors,
+            'last_correct': last.is_correct if last else None,
+            'last_confidence': last.confidence if last else None,
+            'days_since': round(days, 1) if days is not None else None,
+            'interval_days': interval, 'due': maintenance_required,
+            'maintenance_required': maintenance_required,
+            'overdue_days': round(max(0.0, days - interval), 2) if days is not None else 0.0,
+            'priority': priority, 'next_due_at': next_due, 'reason': reason,
+            'archive_suggested': archive_suggested,
+            'archive_reason': ('Últimos 4 acertos seguros, espaçados e pelo menos 80% de acerto no histórico.'
+                               if archive_suggested else None),
         })
-    # A prioridade é global e contínua: sem primeiro cortar por 'vencidos'
-    # ou por dia, permitindo equilibrar revisões e cobertura do edital.
-    topic_queue.sort(key=lambda x:(-x['priority'],x['attempts'],x['id']))
-    question_queue.sort(key=lambda x:(-x['priority'],x['attempts'],x['id']))
-    visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes//10]
-    visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes//5]
+
+    # Regra rígida de precedência: obrigatórios antes de qualquer não vencido.
+    # Dentro de cada grupo: maior atraso absoluto, depois prioridade P.
+    topic_queue.sort(key=lambda x: (not x['maintenance_required'],
+                                    -x['overdue_days'] if x['maintenance_required'] else 0,
+                                    -x['priority'], x['attempts'], x['id']))
+    question_queue.sort(key=lambda x: (not x['maintenance_required'],
+                                       -x['overdue_days'] if x['maintenance_required'] else 0,
+                                       -x['priority'], x['attempts'], x['id']))
+    visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
+    visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
     return {
-        'topics':visible_topics,'questions':visible_questions,
-        'topic_minutes':topic_minutes,'question_minutes':question_minutes,
-        'total_topics':len(topics),'total_questions':len(active_questions),
-        'archived_questions':len(questions)-len(active_questions),
-        'due_topics':sum(x['due'] for x in topic_queue),
-        'due_questions':sum(x['due'] for x in question_queue),
-        'generated_at':now.isoformat(),
-        'note':'Sem tempo obrigatório. Somente respostas registradas são avaliadas; refresh nunca reinicia o histórico.',
+        'topics': visible_topics, 'questions': visible_questions,
+        'topic_minutes': topic_minutes, 'question_minutes': question_minutes,
+        'total_topics': len(topics), 'total_questions': len(active_questions),
+        'archived_questions': len(questions) - len(active_questions),
+        'due_topics': sum(x['due'] for x in topic_queue),
+        'due_questions': sum(x['due'] for x in question_queue),
+        'generated_at': now.isoformat(),
+        'note': 'P=0,35D+0,30T+0,25E+0,10I (0–100); manutenção vencida acima da pontuação; sem limite diário.',
     }

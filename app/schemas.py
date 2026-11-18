@@ -80,6 +80,8 @@ class TopicReviewIn(BaseModel):
     grade: int = Field(ge=0, le=4)
     difficulty: int | None = Field(default=None, ge=1, le=3)
     critical_gap: bool = False
+    explained_without_consulting: bool = False
+    applied_to_new_questions: bool = False
     notes: str | None = Field(default=None, max_length=3000)
 
 

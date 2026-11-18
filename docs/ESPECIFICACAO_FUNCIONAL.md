@@ -1,4 +1,4 @@
-# Especificação funcional — Estudo Adaptativo BB v0.5
+# Especificação funcional — Estudo Adaptativo BB v0.6
 
 ## Princípios
 
@@ -21,6 +21,8 @@
 | Memória sem consultar | 0 (não lembrei), 1 (fragmentos), 2 (parcial com erros), 3 (bom com lacunas pequenas), 4 (correto e seguro) | Sim |
 | Esforço de recuperação | Fácil, Moderado, Muito difícil | Sim |
 | Lacuna conceitual grave | Não / Sim | Sim |
+| Explicação sem consulta | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
+| Aplicação em questões inéditas e variadas | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
 | Anotações | Texto livre | Não |
 
 `Enviar respostas` registra o feedback e exibe o próximo assunto não avaliado desde o último refresh. `Pular` oculta somente durante essa passagem, sem reduzir peso ou registrar erro.
@@ -62,21 +64,36 @@ Não há formulário de registrar conteúdo novo. A API legada permanece para co
 
 ## Algoritmo (implementação atual)
 
-**Cards:** prioridade pontuada pela dificuldade de recordar (33%), tempo relativo ao intervalo (30%), histórico de lacunas/erros (23%), importância (9%) e bônus de cobertura para pouco histórico (até 5%); lacuna grave fornece reforço adicional. Intervalo proposto entre 1 e 60 dias, ajustado por feedback. Tópicos dominados continuam na pilha de manutenção.
+**Cards:** escore exato em escala 0–100:
+
+`P = 0,35D + 0,30T + 0,25E + 0,10I`
+
+- **D**: dificuldade de recuperação, combinando nota 0–4 (78%) e percepção fácil/moderada/difícil (22%). Sem histórico, D=50.
+- **T**: urgência = mínimo de 100 e `100 × dias desde a revisão / intervalo individual`. Sem histórico, T=0.
+- **E**: frequência de notas 0–2 ou lacuna crítica no histórico (0–100); sem histórico, E=50.
+- **I**: importância cadastrada 1–5, normalizada por `(importância−1)×25`.
+
+A fórmula não contém bônus. **Antes da ordenação por P**, o sistema coloca na frente todos os tópicos que atingiram seu **intervalo individual de manutenção**. Dentro do grupo de vencidos ordena pelo maior atraso e, então, por P. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
+
+**Estados de aprendizagem:**
+
+- **Em aprendizagem**: sem histórico, nota 0–2 ou lacuna/erro conceitual grave pendente.
+- **Em consolidação**: recuperação razoável, mas algum requisito de domínio ainda não foi comprovado.
+- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões inéditas e variadas. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
 
 **Questões:** prioridade considerando insucesso suavizado (36%), frequência histórica de erros (19%), tempo relativo ao intervalo (29%), incerteza por amostra pequena (9%), bônus de cobertura (até 7%) e reforço para erros recorrentes (12%). A confiança reduz o valor de acertos chutados. Os intervalos sugeridos chegam até 60 dias; **não há impedimento de revisitar antes**.
 
-Os percentuais são pesos heurísticos iniciais, não um modelo de aprendizado de máquina treinado. A avaliação faz os indicadores mudarem; as pilhas são reordenadas pela prioridade numérica sem cortes por data.
+A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com manutenção vencida antes das demais questões; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
 
 ## Persistência e compatibilidade
 
 - Dados: PostgreSQL, SQLAlchemy + Alembic; login e histórico existentes são preservados.
-- Migração nova: `0005_catalog_archives.py` adiciona `archived_at` em `subjects` e `topics` (valor inicial `NULL` para todos os cadastros existentes permanecerem ativos). A migração `0004` segue intacta para questões.
+- Migração nova: `0006_mastery_evidence.py` adiciona `explained_without_consulting` e `applied_to_new_questions` em `topic_reviews`. Os registros antigos são preservados, com os novos campos iniciando em `false`. Migrações `0005` e anteriores seguem intactas.
 - APIs de atualização: `PATCH` para edição e para arquivamento/restauração de `/api/subjects/{id}`, `/api/topics/{id}`, `/api/questions/{id}`. Os endpoints `/archive` usam `{"archived":true|false}`.
 - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
 - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
 
-## Garantias práticas de funcionamento (v0.5)
+## Garantias práticas de funcionamento (v0.6)
 
 - Nenhum cadastro fica somente no estado JavaScript. O formulário chama a API e recebe confirmação de `db.commit()`.
 - Todos os dados são recarregados do PostgreSQL ao abrir o sistema, sem depender do cache do navegador.

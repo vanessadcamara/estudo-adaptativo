@@ -65,6 +65,8 @@ class TopicReview(Base):
     grade: Mapped[int] = mapped_column(Integer, nullable=False)
     difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     critical_gap: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    explained_without_consulting: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    applied_to_new_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 

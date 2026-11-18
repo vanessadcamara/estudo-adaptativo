@@ -1,4 +1,4 @@
-/* v0.5 — navegação funcional, cadastros persistentes e avaliações por tela. */
+/* v0.6 — fórmula exata, manutenção obrigatória e domínio verificado. */
 'use strict';
 const state = {
   csrf: null, session: null,
@@ -127,9 +127,35 @@ function renderManagedQuestions() {
 function matches(subjectId,chosen){return chosen==='all'||(chosen==='unassigned'&&subjectId==null)||String(subjectId)===chosen;}
 function availableTopics(){return state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject)&&!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
 function visibleQuestions(){return state.queue.questions.filter(q=>matches(q.subject_id,state.errorsSubject));}
-function priority(entry) {return entry.priority>=.58?'Alta':entry.priority>=.38?'Média':'Baixa';}
+function priority(entry) {return entry.priority>=58?'Alta':entry.priority>=38?'Média':'Baixa';}
 function dateInfo(entry) {return entry.days_since==null?'Sem avaliações anteriores':`Última avaliação: ${entry.days_since<1?'há menos de 1 dia':`há ${Math.floor(entry.days_since)} dia(s)`}`;}
-function meta(entry){return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)}</strong></span><span>${esc(dateInfo(entry))}</span><span>${entry.mastered?'Consolidando domínio':entry.due?'Precisa de revisão':'Em manutenção'}</span></div>`;}
+const STATE_LABELS = {em_aprendizagem:'Em aprendizagem',em_consolidacao:'Em consolidação',dominado:'Dominado'};
+function meta(entry){
+  const status=entry.maintenance_required?'Revisão obrigatória':
+    (entry.learning_state ? (STATE_LABELS[entry.learning_state]||'Em aprendizagem'):
+    entry.due?'Precisa de revisão':'Em manutenção');
+  return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)} · ${Number(entry.priority).toFixed(1)}/100</strong></span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span></div>`;
+}
+function masteryDetails(entry) {
+  const c=entry.priority_components, e=entry.mastery_evidence;
+  if(!c||!e)return '';
+  const checks=[
+    ['three_grade_fours','3 notas 4 consecutivas'],
+    ['spaced_recoveries','Intervalos crescentes, com última lacuna de ≥ 14 dias'],
+    ['varied_questions_85_percent',`Acertos ≥ 85% em questões distintas (${e.distinct_questions} questões; ${e.question_accuracy_percent??'—'}% de acertos)`],
+    ['no_critical_gaps','Sem lacunas ou erros conceituais graves pendentes'],
+    ['explained_without_consulting','Explicação sem consulta confirmada'],
+    ['applied_to_new_questions','Aplicação em questões inéditas e variadas confirmada']
+  ];
+  const breakdown=`D ${c.D.toFixed(1)} · T ${c.T.toFixed(1)} · E ${c.E.toFixed(1)} · I ${c.I.toFixed(1)}`;
+  return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
+    <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
+    <p>Manutenção a cada ${entry.interval_days} dia(s). Se o prazo vencer, o assunto sobe acima dos não vencidos, independentemente da pontuação.</p>
+    <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
+    <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
+    <p class="panel-help">Novidade e variedade são confirmadas por você; não são inferidas automaticamente dos links.</p>
+  </details>`;
+}
 function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
 function renderCards() {
   const candidates=availableTopics();const all=state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject));
@@ -142,7 +168,7 @@ function renderCards() {
     return;
   }
   state.activeTopicId=topic.id;
-  $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
+  $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}${masteryDetails(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
 }
 function renderQuestions() {
   const questions=visibleQuestions();
@@ -264,7 +290,10 @@ $('topicFeedback').addEventListener('submit',event=>{event.preventDefault();safe
   const data=new FormData(event.currentTarget),session=await ensureSession();
   await api(`/sessions/${session.id}/topic-reviews`,'POST',{
     topic_id:state.reviewTopicId,grade:Number(data.get('grade')),difficulty:Number(data.get('difficulty')),
-    critical_gap:data.get('critical_gap')==='true',notes:String(data.get('notes')||'').trim()||null,
+    critical_gap:data.get('critical_gap')==='true',
+    explained_without_consulting:data.get('explained_without_consulting')==='on',
+    applied_to_new_questions:data.get('applied_to_new_questions')==='on',
+    notes:String(data.get('notes')||'').trim()||null,
   });
   closeDialog('reviewDialog');state.activeTopicId=null;await afterChange('Avaliação salva no PostgreSQL. Próximo assunto recomendado.');
 });});
