@@ -16,6 +16,7 @@ class Subject(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     topics: Mapped[list["Topic"]] = relationship(back_populates="subject")
 
 
@@ -28,6 +29,7 @@ class Topic(Base):
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     importance: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     subject: Mapped[Subject] = relationship(back_populates="topics")
 
 

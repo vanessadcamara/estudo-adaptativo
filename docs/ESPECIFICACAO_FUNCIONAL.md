@@ -1,4 +1,4 @@
-# Especificação funcional — Estudo Adaptativo BB v0.4
+# Especificação funcional — Estudo Adaptativo BB v0.5
 
 ## Princípios
 
@@ -14,7 +14,7 @@
 
 **Pilha:** `Todas as matérias` ou uma matéria específica. Todos os assuntos aparecem em ordenação dinâmica por prioridade. Não são exibidos totalizadores de rodada, meta diária, chips de intervalos nem contagem de revisões do dia.
 
-**Ao finalizar:** aparece um questionário com os seguintes campos:
+**Ao finalizar:** abre-se uma tela modal própria com um questionário com os seguintes campos:
 
 | Campo | Valores | Obrigatório |
 |---|---|---|
@@ -31,7 +31,7 @@
 
 **Card:** link (quando informado), enunciado (quando informado), motivo da recomendação, prioridade e data relativa da última avaliação. Nenhuma ligação com dias fixos de estudo.
 
-**Formulário:**
+**Ao clicar em Avaliar desempenho:** abre-se uma janela com o formulário:
 
 | Campo | Valores | Obrigatório |
 |---|---|---|
@@ -50,13 +50,13 @@ Possui duas **subabas internas**, separadas das três abas principais:
 
 **Cards** contém dois painéis independentes:
 
-1. **Matérias**: nome (obrigatório); lista das matérias já cadastradas.
-2. **Assuntos**: matéria, nome, código opcional, importância 1 a 5; lista dos assuntos da matéria selecionada. O assunto cadastrado entra imediatamente na pilha, sem registrar primeira aula.
+1. **Matérias**: botão `+ Nova matéria` abre formulário específico. A lista persistida mostra `Editar`, `Arquivar` e `Restaurar` (quando selecionado `Exibir arquivados`).
+2. **Assuntos**: botão `+ Novo assunto` abre formulário com matéria, título, código e importância 1–5. Há `Editar`, `Arquivar` e `Restaurar`, respeitando a matéria. A inclusão alimenta a pilha imediatamente.
 
 **Caderno de erros** contém dois painéis:
 
-1. **Adicionar questão errada**: matéria, URL ou enunciado, assunto opcional. Links repetidos não geram segunda questão.
-2. **Gerenciar links**: alternar entre `Questões na pilha` e `Questões arquivadas`, retirar uma questão ou restaurá-la com o histórico original.
+1. **Adicionar questão errada**: botão `+ Cadastrar questão` abre formulário específico com matéria, URL ou enunciado, assunto opcional. Links repetidos não geram segunda questão.
+2. **Gerenciar links**: alternar entre `Questões ativas` e `Questões arquivadas`, editar/arquivar/restaurar com histórico preservado.
 
 Não há formulário de registrar conteúdo novo. A API legada permanece para compatibilidade com dados já registrados, mas não participa do fluxo principal.
 
@@ -71,7 +71,15 @@ Os percentuais são pesos heurísticos iniciais, não um modelo de aprendizado d
 ## Persistência e compatibilidade
 
 - Dados: PostgreSQL, SQLAlchemy + Alembic; login e histórico existentes são preservados.
-- Migração nova: `0004_archive_questions.py` adiciona `archived_at` em `questions` (valor inicial `NULL` para manter todos os links ativos).
-- API nova: `PATCH /api/questions/{id}/archive` aceita `{"archived":true|false}`.
+- Migração nova: `0005_catalog_archives.py` adiciona `archived_at` em `subjects` e `topics` (valor inicial `NULL` para todos os cadastros existentes permanecerem ativos). A migração `0004` segue intacta para questões.
+- APIs de atualização: `PATCH` para edição e para arquivamento/restauração de `/api/subjects/{id}`, `/api/topics/{id}`, `/api/questions/{id}`. Os endpoints `/archive` usam `{"archived":true|false}`.
 - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
 - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
+
+## Garantias práticas de funcionamento (v0.5)
+
+- Nenhum cadastro fica somente no estado JavaScript. O formulário chama a API e recebe confirmação de `db.commit()`.
+- Todos os dados são recarregados do PostgreSQL ao abrir o sistema, sem depender do cache do navegador.
+- A pilha é calculada com todas as avaliações persistidas, e matérias/assuntos/links arquivados ficam fora da pilha sem eliminar relações históricas.
+- O primeiro acesso com banco vazio mostra comandos clicáveis para criar matéria, assunto e questão. Não se preenche automaticamente dados fictícios.
+- Há testes automatizados da API e um teste manual automatizado de navegação no Chromium em `scripts/smoke_navegador.py` (o script usa SQLite em memória; nunca altera o Neon real).

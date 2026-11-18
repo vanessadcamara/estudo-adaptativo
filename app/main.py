@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,7 @@ from app.auth import (router as auth_router, find_session, require_login,
 from app.engine import build_queue
 from app.models import NewContentLog, Question, QuestionAttempt, StudySession, Subject, Topic, TopicReview, utcnow
 from app.schemas import (NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
-                         SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn, QuestionArchiveIn)
+                         SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn, QuestionArchiveIn, SubjectEdit, TopicEdit, QuestionEdit, ArchiveIn)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -24,7 +24,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.4.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.5.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -46,7 +46,7 @@ async def security_headers(request: Request, call_next):
     )
     if is_production():
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.url.path in {"/", "/login"} or request.url.path.startswith("/api/auth/"):
+    if request.url.path in {"/", "/login"} or request.url.path.startswith("/api/auth/") or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -72,12 +72,17 @@ def health(db: Session = Depends(get_db)):
 
 
 @api.get("/subjects", response_model=list[SubjectOut])
-def list_subjects(db: Session = Depends(get_db)):
-    return db.scalars(select(Subject).order_by(Subject.name)).all()
+def list_subjects(include_archived: bool = False, db: Session = Depends(get_db)):
+    query = select(Subject)
+    if not include_archived:
+        query = query.where(Subject.archived_at.is_(None))
+    return db.scalars(query.order_by(Subject.name)).all()
 
 
 @api.post("/subjects", response_model=SubjectOut, status_code=status.HTTP_201_CREATED)
 def create_subject(payload: SubjectIn, db: Session = Depends(get_db)):
+    if not payload.name.strip():
+        raise HTTPException(422, "Informe o nome da matéria.")
     entry = Subject(name=payload.name.strip())
     db.add(entry)
     try:
@@ -89,15 +94,49 @@ def create_subject(payload: SubjectIn, db: Session = Depends(get_db)):
     return entry
 
 
+@api.patch("/subjects/{subject_id}", response_model=SubjectOut)
+def update_subject(subject_id: int, payload: SubjectEdit, db: Session = Depends(get_db)):
+    item = db.get(Subject, subject_id)
+    if not item:
+        raise HTTPException(404, "Matéria não encontrada.")
+    if not payload.name.strip():
+        raise HTTPException(422, "Informe o nome da matéria.")
+    item.name = payload.name.strip()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Já existe matéria com esse nome.")
+    db.refresh(item)
+    return item
+
+
+@api.patch("/subjects/{subject_id}/archive", response_model=SubjectOut)
+def archive_subject(subject_id: int, payload: ArchiveIn, db: Session = Depends(get_db)):
+    item = db.get(Subject, subject_id)
+    if not item:
+        raise HTTPException(404, "Matéria não encontrada.")
+    item.archived_at = utcnow() if payload.archived else None
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 @api.get("/topics", response_model=list[TopicOut])
-def list_topics(db: Session = Depends(get_db)):
-    return db.scalars(select(Topic).order_by(Topic.subject_id, Topic.code, Topic.title)).all()
+def list_topics(include_archived: bool = False, db: Session = Depends(get_db)):
+    query = select(Topic)
+    if not include_archived:
+        query = query.where(Topic.archived_at.is_(None))
+    return db.scalars(query.order_by(Topic.subject_id, Topic.code, Topic.title)).all()
 
 
 @api.post("/topics", response_model=TopicOut, status_code=status.HTTP_201_CREATED)
 def create_topic(payload: TopicIn, db: Session = Depends(get_db)):
-    if not db.get(Subject, payload.subject_id):
-        raise HTTPException(404, "Matéria não encontrada.")
+    subject = db.get(Subject, payload.subject_id)
+    if subject is None or subject.archived_at is not None:
+        raise HTTPException(404, "Matéria ativa não encontrada.")
+    if not payload.title.strip():
+        raise HTTPException(422, "Informe o nome do assunto.")
     entry = Topic(subject_id=payload.subject_id, title=payload.title.strip(),
                   code=payload.code.strip() if payload.code else None, importance=payload.importance)
     db.add(entry)
@@ -110,6 +149,43 @@ def create_topic(payload: TopicIn, db: Session = Depends(get_db)):
     return entry
 
 
+@api.patch("/topics/{topic_id}", response_model=TopicOut)
+def update_topic(topic_id: int, payload: TopicEdit, db: Session = Depends(get_db)):
+    item = db.get(Topic, topic_id)
+    if not item:
+        raise HTTPException(404, "Assunto não encontrado.")
+    subject = db.get(Subject, payload.subject_id)
+    if subject is None or subject.archived_at is not None:
+        raise HTTPException(404, "Matéria ativa não encontrada.")
+    if not payload.title.strip():
+        raise HTTPException(422, "Informe o nome do assunto.")
+    former_subject_id = item.subject_id
+    item.subject_id, item.title = payload.subject_id, payload.title.strip()
+    item.code = payload.code.strip() if payload.code and payload.code.strip() else None
+    item.importance = payload.importance
+    try:
+        if former_subject_id != payload.subject_id:
+            # Mantém os links associados ao tópico coerentes após troca de disciplina.
+            db.execute(update(Question).where(Question.topic_id == topic_id).values(subject_id=payload.subject_id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Código já utilizado nesta matéria.")
+    db.refresh(item)
+    return item
+
+
+@api.patch("/topics/{topic_id}/archive", response_model=TopicOut)
+def archive_topic(topic_id: int, payload: ArchiveIn, db: Session = Depends(get_db)):
+    item = db.get(Topic, topic_id)
+    if not item:
+        raise HTTPException(404, "Assunto não encontrado.")
+    item.archived_at = utcnow() if payload.archived else None
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 @api.get("/questions", response_model=list[QuestionOut])
 def list_questions(include_archived: bool = False, db: Session = Depends(get_db)):
     query = select(Question)
@@ -120,11 +196,15 @@ def list_questions(include_archived: bool = False, db: Session = Depends(get_db)
 
 @api.post("/questions", response_model=QuestionOut, status_code=status.HTTP_201_CREATED)
 def create_question(payload: QuestionIn, db: Session = Depends(get_db)):
-    if payload.topic_id is not None and not db.get(Topic, payload.topic_id):
-        raise HTTPException(404, "Tópico não encontrado.")
+    if payload.topic_id is not None:
+        topic = db.get(Topic, payload.topic_id)
+        if topic is None or topic.archived_at is not None:
+            raise HTTPException(404, "Assunto ativo não encontrado.")
     subject_id = payload.subject_id
-    if subject_id is not None and not db.get(Subject, subject_id):
-        raise HTTPException(404, "Matéria não encontrada.")
+    if subject_id is not None:
+        subject = db.get(Subject, subject_id)
+        if subject is None or subject.archived_at is not None:
+            raise HTTPException(404, "Matéria ativa não encontrada.")
     if payload.topic_id is not None:
         topic = db.get(Topic, payload.topic_id)
         if subject_id is not None and topic.subject_id != subject_id:
@@ -141,6 +221,34 @@ def create_question(payload: QuestionIn, db: Session = Depends(get_db)):
         raise HTTPException(409, "Esta questão já está cadastrada.")
     db.refresh(entry)
     return entry
+
+
+@api.patch("/questions/{question_id}", response_model=QuestionOut)
+def update_question(question_id: int, payload: QuestionEdit, db: Session = Depends(get_db)):
+    item = db.get(Question, question_id)
+    if not item:
+        raise HTTPException(404, "Questão não encontrada.")
+    subject = db.get(Subject, payload.subject_id) if payload.subject_id is not None else None
+    topic = db.get(Topic, payload.topic_id) if payload.topic_id is not None else None
+    if payload.subject_id is not None and (subject is None or subject.archived_at is not None):
+        raise HTTPException(404, "Matéria ativa não encontrada.")
+    if payload.topic_id is not None:
+        if topic is None or topic.archived_at is not None:
+            raise HTTPException(404, "Assunto ativo não encontrado.")
+        if subject and topic.subject_id != subject.id:
+            raise HTTPException(422, "Assunto não pertence à matéria selecionada.")
+    item.url = str(payload.url) if payload.url else None
+    item.statement = payload.statement.strip() if payload.statement else None
+    item.choices = payload.choices
+    item.topic_id = payload.topic_id
+    item.subject_id = topic.subject_id if topic else payload.subject_id
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Este link já está cadastrado.")
+    db.refresh(item)
+    return item
 
 
 @api.patch("/questions/{question_id}/archive", response_model=QuestionOut)
@@ -209,8 +317,9 @@ def preview_queue(topic_minutes: int | None = Query(None, ge=0, le=180),
 @api.post("/sessions/{session_id}/topic-reviews", status_code=status.HTTP_201_CREATED)
 def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = Depends(get_db)):
     get_open_session_or_409(db, session_id)
-    if not db.get(Topic, payload.topic_id):
-        raise HTTPException(404, "Tópico não encontrado.")
+    topic = db.get(Topic, payload.topic_id)
+    if topic is None or topic.archived_at is not None:
+        raise HTTPException(404, "Assunto ativo não encontrado.")
     entry = TopicReview(session_id=session_id, topic_id=payload.topic_id,
                         grade=payload.grade, difficulty=payload.difficulty,
                         critical_gap=payload.critical_gap, notes=payload.notes)
@@ -226,8 +335,9 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
 @api.post("/sessions/{session_id}/question-attempts", status_code=status.HTTP_201_CREATED)
 def record_question_attempt(session_id: int, payload: QuestionAttemptIn, db: Session = Depends(get_db)):
     get_open_session_or_409(db, session_id)
-    if not db.get(Question, payload.question_id):
-        raise HTTPException(404, "Questão não encontrada.")
+    question = db.get(Question, payload.question_id)
+    if question is None or question.archived_at is not None:
+        raise HTTPException(404, "Questão ativa não encontrada.")
     entry = QuestionAttempt(session_id=session_id, question_id=payload.question_id,
                             is_correct=payload.is_correct, confidence=payload.confidence,
                             error_type=payload.error_type, notes=payload.notes)

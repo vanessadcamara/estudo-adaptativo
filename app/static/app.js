@@ -1,284 +1,288 @@
-/* v0.4 — pilhas contínuas de Cards e Caderno de erros, sem limites diários. */
+/* v0.5 — navegação funcional, cadastros persistentes e avaliações por tela. */
+'use strict';
 const state = {
-  csrf: null, session: null, subjects: [], topics: [], allQuestions: [],
-  queue: {topics: [], questions: []}, currentTab: 'cards', settingsTab: 'cards',
-  cardsSubject: 'all', errorsSubject: 'all', activeTopicId: null,
+  csrf: null, session: null,
+  subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [],
+  queue: {topics: [], questions: []},
+  currentTab: 'cards', settingsTab: 'cards', cardsSubject: 'all', errorsSubject: 'all',
+  activeTopicId: null, questionIndex: 0,
   skippedTopics: new Set(), reviewedTopics: new Set(), answeredQuestions: new Set(),
-  questionIndex: 0,
+  reviewTopicId: null, attemptQuestionId: null,
 };
 const $ = id => document.getElementById(id);
-const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const titleOf = topic => `${topic.code ? topic.code + ' · ' : ''}${topic.title}`;
+const nameOf = id => state.allSubjects.find(s => s.id === id)?.name || 'Sem matéria';
+function notice(text, isError = false) {
+  const node = $('message'); node.hidden = false;
+  node.className = `message${isError ? ' error' : ''}`; node.textContent = text;
+}
+async function safe(action) {
+  try { await action(); }
+  catch (error) { console.error('Falha na ação:', error); notice(error.message || 'Erro inesperado. Tente novamente.', true); }
+}
 async function api(path, method='GET', payload) {
-  const response=await fetch('/api'+path,{
-    method,credentials:'same-origin',
-    headers:{'Content-Type':'application/json',...(method!=='GET'?{'X-CSRF-Token':state.csrf}:{})},
-    body:payload===undefined?undefined:JSON.stringify(payload),
+  const result = await fetch(`/api${path}`, {
+    method, credentials:'same-origin',
+    headers: {'Content-Type':'application/json', ...(method === 'GET' ? {} : {'X-CSRF-Token': state.csrf})},
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+    cache: 'no-store',
   });
-  const data=await response.json().catch(()=>({}));
-  if(response.status===401){window.location.replace('/login');throw Error('Sua sessão expirou. Entre novamente.');}
-  if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:'Não foi possível concluir. Verifique sua conexão.');
+  const data = await result.json().catch(() => ({}));
+  if (result.status === 401) { window.location.replace('/login'); throw new Error('Sua sessão expirou. Entre novamente.'); }
+  if (!result.ok) {
+    const detail = data.detail;
+    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(d=>d.msg).join('; ') : 'Não foi possível salvar.');
+  }
   return data;
 }
-function toast(message,error=false){const node=$('message');node.textContent=message;node.className=`message${error?' error':''}`;node.hidden=false;}
-async function safe(work){try{await work();}catch(e){toast(e.message||'Não foi possível concluir.',true);}}
-function gotoTab(name){
-  state.currentTab=name;
-  document.querySelectorAll('[data-tab]').forEach(button=>{
-    const active=button.dataset.tab===name;button.classList.toggle('active',active);
-    button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;
-  });
-  ['cards','errors','settings'].forEach(tab=>$('tab-'+tab).hidden=tab!==name);
+function showDialog(id) { const dialog = $(id); if (!dialog.open) dialog.showModal(); }
+function closeDialog(id) { const dialog = $(id); if (dialog.open) dialog.close(); }
+function goTo(tab, subtab = state.settingsTab, writeHash = true) {
+  state.currentTab = tab; state.settingsTab = subtab;
+  for (const name of ['cards', 'errors', 'settings']) {
+    const active = name === tab;
+    $(`tab-${name}`).hidden = !active;
+    const button = $(`tab-button-${name}`);
+    button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
+  }
+  for (const name of ['cards', 'errors']) {
+    const active = name === subtab;
+    $(`settings-${name}`).hidden = !active;
+    const button = $(`settings-button-${name}`);
+    button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
+  }
+  if (writeHash) {
+    const route = tab === 'settings' ? `#configuracoes/${subtab}` : tab === 'errors' ? '#caderno' : '#cards';
+    if (window.location.hash !== route) window.history.replaceState(null, '', route);
+  }
 }
-function gotoSettingsTab(name){
-  state.settingsTab=name;
-  document.querySelectorAll('[data-settings-tab]').forEach(button=>{
-    const active=button.dataset.settingsTab===name;
-    button.classList.toggle('active',active);button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;
-  });
-  ['cards','errors'].forEach(tab=>$('settings-'+tab).hidden=tab!==name);
+function parseRoute() {
+  const hash = location.hash;
+  if (hash.startsWith('#configuracoes')) goTo('settings', hash.endsWith('/errors') ? 'errors' : 'cards', false);
+  else if (hash === '#caderno') goTo('errors', 'cards', false);
+  else goTo('cards', 'cards', false);
 }
-function options(items,placeholder,allowEmpty=true){
-  return (allowEmpty?`<option value="">${escapeHtml(placeholder)}</option>`:'')+
-    items.map(item=>`<option value="${item.id}">${escapeHtml(item.label)}</option>`).join('');
+function selectOptions(entries, placeholder, includeEmpty = true) {
+  return `${includeEmpty ? `<option value="">${esc(placeholder)}</option>` : ''}${entries.map(x=>`<option value="${x.id}">${esc(x.label)}</option>`).join('')}`;
 }
-function syncSelect(id, html, fallback=''){
-  const node=$(id),previous=node.value;
-  node.innerHTML=html;node.value=previous||fallback;
-  if(node.selectedIndex<0)node.value=fallback;
+function updateSelect(id, html, fallback='') {
+  const element = $(id), before = element.value;
+  element.innerHTML = html;
+  element.value = before || fallback;
+  if (element.selectedIndex < 0) element.value = fallback;
 }
-function topicLabel(t){return `${t.code?t.code+' · ':''}${t.title}`;}
-function refreshSelects(){
-  const subjects=state.subjects.map(s=>({id:s.id,label:s.name}));
-  const filters='<option value="all">Todas as matérias</option>'+options(subjects,'',false);
-  syncSelect('cardsSubject',filters,state.cardsSubject);
-  syncSelect('errorsSubject',filters+'<option value="unassigned">Sem matéria</option>',state.errorsSubject);
-  $('cardsSubject').value=state.cardsSubject;
-  $('errorsSubject').value=state.errorsSubject;
-  syncSelect('subjectSelect',options(subjects,'Selecione uma matéria'));
-  syncSelect('questionSubject',options(subjects,'Selecione uma matéria'));
-  updateQuestionTopicOptions();
+function updateOptions() {
+  const active = state.subjects.map(s=>({id:s.id,label:s.name}));
+  const allOption = '<option value="all">Todas as matérias</option>';
+  updateSelect('cardsSubject', allOption + selectOptions(active,'',false),state.cardsSubject);
+  updateSelect('errorsSubject', allOption + selectOptions(active,'',false) + '<option value="unassigned">Sem matéria</option>',state.errorsSubject);
+  state.cardsSubject = $('cardsSubject').value || 'all';
+  state.errorsSubject = $('errorsSubject').value || 'all';
+  updateSelect('topicSubjectFilter', '<option value="all">Todas as matérias</option>'+selectOptions(state.allSubjects.map(s=>({id:s.id,label:s.name})),'',false),'all');
+  updateSelect('subjectSelect', selectOptions(active, 'Selecione a matéria'));
+  updateSelect('questionSubject', selectOptions(active, 'Selecione a matéria'));
+  updateQuestionTopics();
 }
-function updateQuestionTopicOptions(){
-  const subjectId=Number($('questionSubject').value);
-  const candidates=state.topics.filter(t=>t.subject_id===subjectId).map(t=>({id:t.id,label:topicLabel(t)}));
-  syncSelect('questionTopic',options(candidates,'Sem assunto específico'));
+function updateQuestionTopics(selected=null) {
+  const id = Number($('questionSubject').value);
+  const topics = state.topics.filter(t=>t.subject_id === id).map(t=>({id:t.id,label:titleOf(t)}));
+  updateSelect('questionTopic', selectOptions(topics,'Sem assunto específico'));
+  if (selected != null && topics.some(t=>t.id===selected)) $('questionTopic').value = String(selected);
 }
-function renderCatalog(){
-  $('subjectsList').innerHTML='<p class="registered-heading">Matérias cadastradas</p>'+
-    (state.subjects.length?state.subjects.map(s=>{
-      const n=state.topics.filter(t=>t.subject_id===s.id).length;
-      return `<div class="registered-item"><div><strong>${escapeHtml(s.name)}</strong><span class="item-note">${n} assunto${n===1?'':'s'}</span></div></div>`;
-    }).join(''):'<p class="empty-inline">Nenhuma matéria cadastrada.</p>');
-  const subject=$('subjectSelect').value;
-  const topics=state.topics.filter(t=>!subject||String(t.subject_id)===subject);
-  $('topicsList').innerHTML='<p class="registered-heading">Assuntos da matéria selecionada</p>'+
-    (topics.length?topics.map(t=>`<div class="registered-item"><div><strong>${escapeHtml(topicLabel(t))}</strong><span class="item-note">Importância ${t.importance}/5 · entra na pilha automaticamente</span></div></div>`).join(''):'<p class="empty-inline">Nenhum assunto cadastrado nesta matéria.</p>');
+async function reloadAll({preserveQuestion=true}={}) {
+  const oldQuestion = preserveQuestion ? visibleQuestions()[state.questionIndex]?.id : null;
+  const [allSubjects,allTopics,allQuestions,queue,openSession] = await Promise.all([
+    api('/subjects?include_archived=true'),api('/topics?include_archived=true'),
+    api('/questions?include_archived=true'),api('/queue'),api('/sessions/open'),
+  ]);
+  state.allSubjects=allSubjects;state.allTopics=allTopics;state.allQuestions=allQuestions;
+  state.subjects=allSubjects.filter(s=>!s.archived_at);
+  state.topics=allTopics.filter(t=>!t.archived_at && state.subjects.some(s=>s.id===t.subject_id));
+  state.queue=queue;state.session=openSession;
+  if (openSession) {
+    const progress=await api(`/sessions/${openSession.id}/progress`);
+    state.reviewedTopics = new Set(progress.topics); state.answeredQuestions = new Set(progress.questions);
+  } else {state.reviewedTopics = new Set();state.answeredQuestions = new Set();}
+  updateOptions();renderCatalog();renderManagedQuestions();
+  const updatedIndex = state.queue.questions.findIndex(q=>q.id===oldQuestion);
+  state.questionIndex = updatedIndex >= 0 ? updatedIndex : 0;
+  renderCards();renderQuestions();
 }
-function renderQuestionManagement(){
+function subjectsVisible() {return $('showArchivedCatalog').checked?state.allSubjects:state.subjects;}
+function topicsVisible() {
+  const collection = $('showArchivedCatalog').checked ? state.allTopics : state.topics;
+  const filter=$('topicSubjectFilter').value;
+  return collection.filter(t=>filter==='all' || String(t.subject_id)===filter);
+}
+function renderCatalog() {
+  $('subjectsList').innerHTML = subjectsVisible().length ? subjectsVisible().map(s=>`<div class="list-item"><div class="item-text"><strong>${esc(s.name)}</strong><small>${state.allTopics.filter(t=>t.subject_id===s.id && !t.archived_at).length} assunto(s) ${s.archived_at?' · Arquivada':''}</small></div><div class="item-actions">${s.archived_at?'':`<button class="button quiet small" data-edit-subject="${s.id}">Editar</button>`}<button class="button ${s.archived_at?'quiet':'danger-outline'} small" data-archive-subject="${s.id}" data-value="${!s.archived_at}">${s.archived_at?'Restaurar':'Arquivar'}</button></div></div>`).join('') : '<p class="empty-list">Nenhuma matéria cadastrada. Clique em Nova matéria.</p>';
+  $('topicsList').innerHTML = topicsVisible().length ? topicsVisible().map(t=>`<div class="list-item"><div class="item-text"><strong>${esc(titleOf(t))}</strong><small>${esc(nameOf(t.subject_id))} · importância ${t.importance}/5 ${t.archived_at?'· Arquivado':''}</small></div><div class="item-actions">${t.archived_at?'':`<button class="button quiet small" data-edit-topic="${t.id}">Editar</button>`}<button class="button ${t.archived_at?'quiet':'danger-outline'} small" data-archive-topic="${t.id}" data-value="${!t.archived_at}">${t.archived_at?'Restaurar':'Arquivar'}</button></div></div>`).join('') : '<p class="empty-list">Nenhum assunto nesta seleção. Clique em Novo assunto.</p>';
+}
+function renderManagedQuestions() {
   const archived=$('manageQuestionsFilter').value==='archived';
-  const entries=state.allQuestions.filter(q=>Boolean(q.archived_at)===archived);
-  const priorityById=new Map(state.queue.questions.map(q=>[q.id,q]));
-  $('managedQuestionsList').innerHTML=`<p class="registered-heading">${archived?'Arquivadas':'Na pilha'} · ${entries.length}</p>`+
-    (entries.length?entries.map(q=>{
-      const priority=priorityById.get(q.id);
-      const title=q.url||q.statement||`Questão #${q.id}`;
-      return `<div class="registered-item"><div><strong>${escapeHtml(title)}</strong><span class="item-note">${q.subject_id?escapeHtml(state.subjects.find(s=>s.id===q.subject_id)?.name||'Matéria não identificada'):'Sem matéria'}${priority?.archive_suggested?' · Arquivamento recomendado':''}</span></div><button class="button ${archived?'secondary':'danger-outline'}" type="button" data-archive-id="${q.id}" data-archive-value="${!archived}">${archived?'Restaurar':'Retirar da pilha'}</button></div>`;
-    }).join(''):'<p class="empty-inline">Nenhum link aqui.</p>');
+  const records=state.allQuestions.filter(q=>Boolean(q.archived_at)===archived);
+  $('managedQuestionsList').innerHTML=records.length?records.map(q=>`<div class="list-item"><div class="item-text"><strong>${esc(q.url||q.statement?.slice(0,100)||`Questão ${q.id}`)}</strong><small>${esc(nameOf(q.subject_id))}</small></div><div class="item-actions">${q.archived_at?'':`<button type="button" class="button quiet small" data-edit-question="${q.id}">Editar</button>`}<button type="button" class="button ${q.archived_at?'quiet':'danger-outline'} small" data-archive-question="${q.id}" data-value="${!q.archived_at}">${q.archived_at?'Restaurar':'Arquivar'}</button></div></div>`).join(''):'<p class="empty-list">Nenhuma questão nessa lista.</p>';
 }
-async function loadBasics(){
-  [state.subjects,state.topics]=await Promise.all([api('/subjects'),api('/topics')]);
-  refreshSelects();renderCatalog();
-}
-async function loadProgress(){
-  if(!state.session){state.reviewedTopics=new Set();state.answeredQuestions=new Set();return;}
-  const progress=await api(`/sessions/${state.session.id}/progress`);
-  state.reviewedTopics=new Set(progress.topics);state.answeredQuestions=new Set(progress.questions);
-}
-async function loadQueue({keepQuestion=true}={}){
-  const previousId=keepQuestion?filteredQuestions()[state.questionIndex]?.id:null;
-  [state.queue,state.allQuestions]=await Promise.all([api('/queue'),api('/questions?include_archived=true')]);
-  await loadProgress();
-  if(previousId!=null){const index=filteredQuestions().findIndex(q=>q.id===previousId);state.questionIndex=index>=0?index:0;}
-  else state.questionIndex=0;
-  renderCards();renderQuestions();renderQuestionManagement();
-}
-function matchesSubject(entry,selected){
-  if(selected==='all')return true;
-  if(selected==='unassigned')return entry.subject_id==null;
-  return String(entry.subject_id)===selected;
-}
-function filteredTopics(){return state.queue.topics.filter(t=>matchesSubject(t,state.cardsSubject));}
-function availableTopics(){return filteredTopics().filter(t=>!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
-function filteredQuestions(){return state.queue.questions.filter(q=>matchesSubject(q,state.errorsSubject));}
-function priorityLabel(entry){return entry.priority>=0.58?'Alta':entry.priority>=0.38?'Moderada':'Baixa';}
-function timeInfo(entry){
-  if(entry.days_since==null)return 'Sem avaliações anteriores';
-  const d=entry.days_since;
-  return d<1?'Última avaliação há menos de um dia':`Última avaliação há ${Math.floor(d)} dia${Math.floor(d)===1?'':'s'}`;
-}
-function details(entry){
-  return `<div class="priority-line"><span><strong>Prioridade: ${priorityLabel(entry)}</strong></span><span>${timeInfo(entry)}</span></div>`;
-}
-function emptyState(title,message,settingsAction=''){
-  return `<div class="empty-state"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(message)}</p>${settingsAction?`<button type="button" class="button secondary" data-settings-action="${settingsAction}">Abrir configurações</button>`:''}</div>`;
-}
-function renderCards(){
-  const all=filteredTopics(),remaining=availableTopics();
-  const active=remaining.find(t=>t.id===state.activeTopicId)||remaining[0];
-  if(!active){state.activeTopicId=null;
-    $('topicStudyCard').innerHTML=all.length?
-      emptyState('Assuntos já avaliados ou pulados','Nenhum limite de tempo: use Atualizar prioridades para voltar a percorrer a pilha quando desejar.'):
-      emptyState('Nenhum assunto cadastrado','Cadastre uma matéria e seus assuntos em Configurações.','cards');
+function matches(subjectId,chosen){return chosen==='all'||(chosen==='unassigned'&&subjectId==null)||String(subjectId)===chosen;}
+function availableTopics(){return state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject)&&!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
+function visibleQuestions(){return state.queue.questions.filter(q=>matches(q.subject_id,state.errorsSubject));}
+function priority(entry) {return entry.priority>=.58?'Alta':entry.priority>=.38?'Média':'Baixa';}
+function dateInfo(entry) {return entry.days_since==null?'Sem avaliações anteriores':`Última avaliação: ${entry.days_since<1?'há menos de 1 dia':`há ${Math.floor(entry.days_since)} dia(s)`}`;}
+function meta(entry){return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)}</strong></span><span>${esc(dateInfo(entry))}</span><span>${entry.mastered?'Consolidando domínio':entry.due?'Precisa de revisão':'Em manutenção'}</span></div>`;}
+function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
+function renderCards() {
+  const candidates=availableTopics();const all=state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject));
+  const topic=candidates.find(t=>t.id===state.activeTopicId)||candidates[0];
+  if (!topic) {
+    state.activeTopicId=null;
+    $('topicStudyCard').innerHTML=!state.subjects.length?empty('Comece cadastrando sua primeira matéria','O banco ainda não tem matérias. Abra Configurações para cadastrar e depois adicione assuntos.','new-subject','Cadastrar matéria'):
+      !all.length?empty('Cadastre um assunto para começar','Sua matéria está cadastrada, mas ainda não há assuntos disponíveis na pilha.','new-topic','Cadastrar assunto'):
+      empty('Você percorreu esta pilha','Os itens avaliados e pulados continuam salvos. Atualize as prioridades para fazer uma nova passagem.','refresh','Reorganizar pilha');
     return;
   }
-  state.activeTopicId=active.id;
-  $('topicStudyCard').innerHTML=`<article class="card">
-    <div class="card-overline"><span>PRÓXIMO ASSUNTO RECOMENDADO</span></div>
-    <h3 class="card-title">${active.code?`<span class="eyebrow">${escapeHtml(active.code)}</span> · `:''}${escapeHtml(active.title)}</h3>
-    <p class="card-description">${escapeHtml(active.reason)}. Explique livremente antes de avaliar sua lembrança.</p>
-    ${details(active)}
-    <div id="topicActions" class="card-actions"><button id="topicFinish" type="button" class="button primary">Marcar como finalizado</button><button id="topicSkip" class="button outline" type="button">Pular por agora →</button></div>
-    <form id="topicFeedback" class="questionnaire" hidden>
-      <h3>Como foi sua revisão?</h3><p class="questionnaire-intro">Sua avaliação atualiza os pesos do assunto e influencia os próximos intervalos.</p>
-      <fieldset class="question-block"><legend>1. O quanto conseguiu lembrar sem consultar?</legend><div class="radio-stack">
-      ${[['0','0 · Não lembrei do assunto'],['1','1 · Lembrei fragmentos, com muitas lacunas'],['2','2 · Lembrei parcialmente, com erros importantes'],['3','3 · Lembrei bem, com pequenas lacunas'],['4','4 · Expliquei corretamente, com segurança']].map(([v,txt])=>`<label class="radio-row"><input type="radio" name="grade" value="${v}" required><span>${txt}</span></label>`).join('')}
-      </div></fieldset>
-      <fieldset class="question-block"><legend>2. Qual foi o esforço para recuperar a informação?</legend><div class="radio-grid">
-        <label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label>
-        <label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label>
-        <label class="radio-row"><input type="radio" name="difficulty" value="3" required>Muito difícil</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>3. Ficou alguma lacuna conceitual importante?</legend><div class="chip-row">
-        <label class="radio-row"><input type="radio" name="critical_gap" value="false" required>Não</label>
-        <label class="radio-row"><input type="radio" name="critical_gap" value="true" required>Sim, preciso reforçar</label>
-      </div></fieldset>
-      <label class="field">Anotação (opcional)<textarea name="notes" rows="2" maxlength="3000" placeholder="Conceitos a retomar..."></textarea></label>
-      <div class="card-actions"><button type="submit" class="button primary">Enviar respostas</button><button type="button" id="topicCancel" class="button outline">Voltar</button></div>
-    </form>
-  </article>`;
-  $('topicFinish').addEventListener('click',()=>{$('topicActions').hidden=true;$('topicFeedback').hidden=false;});
-  $('topicCancel').addEventListener('click',()=>{$('topicActions').hidden=false;$('topicFeedback').hidden=true;});
-  $('topicSkip').addEventListener('click',()=>{state.skippedTopics.add(active.id);state.activeTopicId=null;renderCards();});
-  $('topicFeedback').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
-    const d=new FormData(event.currentTarget),session=await ensureSession();
-    await api(`/sessions/${session.id}/topic-reviews`,'POST',{
-      topic_id:active.id,grade:Number(d.get('grade')),difficulty:Number(d.get('difficulty')),
-      critical_gap:d.get('critical_gap')==='true',notes:String(d.get('notes')||'').trim()||null,
-    });
-    state.activeTopicId=null;await loadQueue();toast('Avaliação registrada. A pilha já considera seu desempenho.');
-  });});
+  state.activeTopicId=topic.id;
+  $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
 }
-function renderQuestions(){
-  const questions=filteredQuestions();
-  if(state.questionIndex>=questions.length)state.questionIndex=Math.max(0,questions.length-1);
+function renderQuestions() {
+  const questions=visibleQuestions();
+  if (state.questionIndex>=questions.length)state.questionIndex=Math.max(0,questions.length-1);
   const q=questions[state.questionIndex];
   $('questionPrevious').disabled=!q||state.questionIndex===0;
   $('questionNext').disabled=!q||state.questionIndex===questions.length-1;
   $('questionPosition').textContent=q?`${state.questionIndex+1} de ${questions.length}`:'Sem questões';
-  if(!q){$('questionStudyCard').innerHTML=emptyState('Nenhuma questão na pilha','Adicione um link em Configurações ou restaure uma questão arquivada.','errors');return;}
+  if(!q){$('questionStudyCard').innerHTML=empty('Seu caderno está vazio','Cadastre uma matéria e o link de uma questão errada para começar a revisão.','new-question','Adicionar questão');return;}
   const done=state.answeredQuestions.has(q.id);
-  $('questionStudyCard').innerHTML=`<article class="card">
-    <div class="card-overline"><span>QUESTÃO RECOMENDADA</span><span>${done?'Avaliada desde a última atualização':''}</span></div>
-    <h3 class="card-title">${q.statement?escapeHtml(q.statement.length>155?q.statement.slice(0,155)+'…':q.statement):'Retome esta questão'}</h3>
-    <p class="card-description">${escapeHtml(q.reason)}.</p>
-    ${q.url?`<a href="${escapeHtml(q.url)}" target="_blank" rel="noopener noreferrer" class="question-link">Abrir link da questão ↗</a>`:''}
-    ${q.statement&&q.statement.length>155?`<p class="question-text">${escapeHtml(q.statement)}</p>`:''}
-    ${details(q)}
-    ${q.archive_suggested?`<aside class="archive-suggestion"><strong>Sugestão do algoritmo: retirar esta questão da pilha</strong><p>${escapeHtml(q.archive_reason||'Os acertos já demonstram consistência.')}</p><button class="button secondary" id="archiveRecommended" type="button">Arquivar link recomendado</button></aside>`:''}
-    ${done?'<div class="summary-box">Sua tentativa está salva. O próximo refresh permitirá revisitá-la conforme a prioridade calculada.</div>':`<form id="questionFeedback" class="questionnaire">
-      <h3>Como você se saiu?</h3><p class="questionnaire-intro">Responda à questão no site de origem e registre seu desempenho.</p>
-      <fieldset class="question-block"><legend>1. Você acertou?</legend><div class="chip-row">
-        <label class="radio-row"><input type="radio" name="is_correct" value="false" required>Errei</label>
-        <label class="radio-row"><input type="radio" name="is_correct" value="true" required>Acertei</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>2. Qual foi sua confiança na resposta?</legend><div class="radio-grid">
-        <label class="radio-row"><input type="radio" name="confidence" value="1" required>Chutei</label>
-        <label class="radio-row"><input type="radio" name="confidence" value="2" required>Tive dúvidas</label>
-        <label class="radio-row"><input type="radio" name="confidence" value="3" required>Estava segura</label>
-      </div></fieldset>
-      <label class="field">3. Se errou, qual foi a dificuldade? (opcional)
-        <select name="error_type"><option value="">Não classificar</option><option value="concept">Não entendi o conceito</option><option value="interpretation">Interpretação do enunciado</option><option value="attention">Desatenção</option><option value="calculation">Cálculo / procedimento</option><option value="other">Outro motivo</option></select>
-      </label>
-      <label class="field">Anotação (opcional)<textarea name="notes" rows="2" maxlength="3000" placeholder="O que devo lembrar?"></textarea></label>
-      <button class="button primary" type="submit">Salvar avaliação e continuar</button>
-    </form>`}
-    ${!q.archive_suggested?'<div class="archival-row"><button id="archiveManual" class="button danger-outline" type="button">Retirar da pilha</button></div>':''}
-  </article>`;
-  const form=$('questionFeedback');
-  if(form)form.addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
-    const d=new FormData(event.currentTarget),session=await ensureSession(),isCorrect=d.get('is_correct')==='true';
-    await api(`/sessions/${session.id}/question-attempts`,'POST',{
-      question_id:q.id,is_correct:isCorrect,confidence:Number(d.get('confidence')),
-      error_type:!isCorrect&&d.get('error_type')?String(d.get('error_type')):null,
-      notes:String(d.get('notes')||'').trim()||null,
-    });
-    await loadQueue();
-    const list=filteredQuestions();
-    const candidate=list.findIndex(item=>item.id!==q.id&&!state.answeredQuestions.has(item.id));
-    if(candidate!==-1)state.questionIndex=candidate;
-    renderQuestions();toast('Tentativa registrada. As prioridades foram recalculadas.');
-  });});
-  for(const id of ['archiveRecommended','archiveManual']){
-    const button=$(id);if(button)button.addEventListener('click',()=>safe(async()=>{
-      if(!window.confirm('Retirar esta questão da pilha? Você poderá restaurá-la em Configurações, sem perder o histórico.'))return;
-      await toggleArchive(q.id,true);toast('Questão arquivada. Histórico preservado.');
-    }));
-  }
+  $('questionStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">LINK RECOMENDADO · ${state.questionIndex+1}/${questions.length}</div><h3>${esc(q.statement?q.statement.slice(0,150):'Retome esta questão')}</h3><p class="card-description">${esc(q.reason)}.</p>${q.url?`<a class="link-question" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">Abrir link da questão ↗</a>`:''}${q.statement&&q.statement.length>150?`<p class="statement">${esc(q.statement)}</p>`:''}${meta(q)}${q.archive_suggested?`<div class="suggestion"><strong>Arquivamento sugerido</strong><p>${esc(q.archive_reason||'Você demonstrou domínio consistente.')}</p></div>`:''}<div class="actions"><button type="button" class="button primary" data-action="assess-question" data-id="${q.id}" ${done?'disabled':''}>${done?'Avaliação salva':'Avaliar desempenho'}</button><button type="button" class="button outline" data-action="archive-question" data-id="${q.id}">${q.archive_suggested?'Arquivar link recomendado':'Arquivar link'}</button></div>${done?'<p class="helper">Esta questão já foi avaliada nesta passagem. O refresh permite um novo ciclo, sem apagar a tentativa.</p>':''}</article>`;
 }
-async function toggleArchive(id,archived){
-  await api(`/questions/${id}/archive`,'PATCH',{archived});
-  await loadQueue({keepQuestion:false});
+function openSubject(id=null) {
+  $('subjectForm').reset();const s=id==null?null:state.allSubjects.find(x=>x.id===id);
+  $('subjectEditId').value=s?.id||'';$('subjectName').value=s?.name||'';
+  $('subjectDialogTitle').textContent=s?'Editar matéria':'Nova matéria';showDialog('subjectDialog');
+}
+function openTopic(id=null) {
+  if(!state.subjects.length) {goTo('settings','cards');notice('Primeiro cadastre uma matéria.');openSubject();return;}
+  $('topicForm').reset();const t=id==null?null:state.allTopics.find(x=>x.id===id);
+  $('topicEditId').value=t?.id||'';
+  updateSelect('subjectSelect',selectOptions(state.subjects.map(s=>({id:s.id,label:s.name})),'Selecione a matéria'));
+  $('subjectSelect').value=String(t?.subject_id||($('topicSubjectFilter').value!=='all'&&state.subjects.some(s=>String(s.id)===$('topicSubjectFilter').value)?$('topicSubjectFilter').value:''));
+  $('topicTitle').value=t?.title||'';$('topicCode').value=t?.code||'';$('topicImportance').value=String(t?.importance||3);
+  $('topicDialogTitle').textContent=t?'Editar assunto':'Novo assunto';showDialog('topicDialog');
+}
+function openQuestion(id=null) {
+  if(!state.subjects.length){goTo('settings','cards');notice('Cadastre uma matéria antes de adicionar questões.');openSubject();return;}
+  $('questionForm').reset();const q=id==null?null:state.allQuestions.find(x=>x.id===id);
+  $('questionEditId').value=q?.id||'';$('questionSubject').value=String(q?.subject_id||'');
+  $('questionUrl').value=q?.url||'';$('questionText').value=q?.statement||'';
+  updateQuestionTopics(q?.topic_id);
+  $('questionEditorTitle').textContent=q?'Editar questão':'Adicionar questão errada';showDialog('questionEditorDialog');
 }
 async function ensureSession(){if(!state.session)state.session=await api('/sessions','POST');return state.session;}
-async function refreshRecommendations(){
+async function refresh() {
   if(state.session)await api(`/sessions/${state.session.id}/refresh`,'POST');
-  state.session=null;state.reviewedTopics=new Set();state.answeredQuestions=new Set();
-  state.skippedTopics=new Set();state.activeTopicId=null;state.questionIndex=0;
-  await loadQueue({keepQuestion:false});
-  toast('Pilha atualizada conforme o histórico e o tempo transcorrido. Nenhum dado foi apagado.');
+  state.session=null;state.skippedTopics.clear();state.reviewedTopics.clear();state.answeredQuestions.clear();state.activeTopicId=null;state.questionIndex=0;
+  await reloadAll({preserveQuestion:false});notice('Prioridades recalculadas. O histórico continua salvo.');
 }
-// Navegação principal e secundária.
-document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>gotoTab(button.dataset.tab)));
-document.querySelectorAll('[data-settings-tab]').forEach(button=>button.addEventListener('click',()=>gotoSettingsTab(button.dataset.settingsTab)));
-document.addEventListener('click',event=>{
-  const action=event.target.closest('[data-settings-action]');if(action){gotoTab('settings');gotoSettingsTab(action.dataset.settingsAction);}
-  const archive=event.target.closest('[data-archive-id]');if(archive)safe(async()=>{
-    const archived=archive.dataset.archiveValue==='true';
-    if(archived&&!window.confirm('Retirar da pilha? O histórico será preservado.'))return;
-    await toggleArchive(Number(archive.dataset.archiveId),archived);
-    toast(archived?'Questão arquivada.':'Questão restaurada na pilha.');
-  });
-});
-$('cardsSubject').addEventListener('change',event=>{state.cardsSubject=event.target.value;state.activeTopicId=null;state.skippedTopics=new Set();renderCards();});
+async function afterChange(message) {await reloadAll({preserveQuestion:false});notice(message);}
+async function archive(entity,id,archived){
+  if(archived&&!window.confirm('Arquivar este item? Seu histórico continuará salvo e será possível restaurá-lo.'))return;
+  await api(`/${entity}/${id}/archive`,'PATCH',{archived});
+  state.activeTopicId=null;await afterChange(archived?'Arquivado com sucesso. Histórico mantido.':'Restaurado com sucesso.');
+}
+
+// Todos os botões globais são vinculados uma só vez; itens criados dinamicamente usam delegação.
+document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>goTo(b.dataset.tab)));
+document.querySelectorAll('[data-settings-tab]').forEach(b=>b.addEventListener('click',()=>goTo('settings',b.dataset.settingsTab)));
+window.addEventListener('hashchange',parseRoute);
+document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>closeDialog(b.dataset.close)));
+$('newSubject').addEventListener('click',()=>openSubject());
+$('newTopic').addEventListener('click',()=>openTopic());
+$('newQuestion').addEventListener('click',()=>openQuestion());
+$('showArchivedCatalog').addEventListener('change',renderCatalog);
+$('topicSubjectFilter').addEventListener('change',renderCatalog);
+$('manageQuestionsFilter').addEventListener('change',renderManagedQuestions);
+$('questionSubject').addEventListener('change',()=>updateQuestionTopics());
+$('cardsSubject').addEventListener('change',event=>{state.cardsSubject=event.target.value;state.skippedTopics.clear();state.activeTopicId=null;renderCards();});
 $('errorsSubject').addEventListener('change',event=>{state.errorsSubject=event.target.value;state.questionIndex=0;renderQuestions();});
-$('cardsRefresh').addEventListener('click',()=>safe(refreshRecommendations));
-$('errorsRefresh').addEventListener('click',()=>safe(refreshRecommendations));
 $('questionPrevious').addEventListener('click',()=>{if(state.questionIndex>0){state.questionIndex--;renderQuestions();}});
-$('questionNext').addEventListener('click',()=>{if(state.questionIndex<filteredQuestions().length-1){state.questionIndex++;renderQuestions();}});
-$('questionSubject').addEventListener('change',updateQuestionTopicOptions);
-$('subjectSelect').addEventListener('change',renderCatalog);
-$('manageQuestionsFilter').addEventListener('change',renderQuestionManagement);
+$('questionNext').addEventListener('click',()=>{if(state.questionIndex<visibleQuestions().length-1){state.questionIndex++;renderQuestions();}});
+$('cardsRefresh').addEventListener('click',()=>safe(refresh));
+$('errorsRefresh').addEventListener('click',()=>safe(refresh));
+$('logoutBtn').addEventListener('click',()=>safe(async()=>{await api('/auth/logout','POST');window.location.replace('/login');}));
+
+document.addEventListener('click',event=>{
+  const el=event.target.closest('button[data-action],button[data-edit-subject],button[data-edit-topic],button[data-edit-question],button[data-archive-subject],button[data-archive-topic],button[data-archive-question]');
+  if(!el)return;
+  if(el.dataset.editSubject){openSubject(Number(el.dataset.editSubject));return;}
+  if(el.dataset.editTopic){openTopic(Number(el.dataset.editTopic));return;}
+  if(el.dataset.editQuestion){openQuestion(Number(el.dataset.editQuestion));return;}
+  if(el.dataset.archiveSubject){safe(()=>archive('subjects',Number(el.dataset.archiveSubject),el.dataset.value==='true'));return;}
+  if(el.dataset.archiveTopic){safe(()=>archive('topics',Number(el.dataset.archiveTopic),el.dataset.value==='true'));return;}
+  if(el.dataset.archiveQuestion){safe(()=>archive('questions',Number(el.dataset.archiveQuestion),el.dataset.value==='true'));return;}
+  const id=Number(el.dataset.id);
+  switch(el.dataset.action){
+    case 'new-subject':goTo('settings','cards');openSubject();break;
+    case 'new-topic':goTo('settings','cards');openTopic();break;
+    case 'new-question':goTo('settings','errors');openQuestion();break;
+    case 'refresh':safe(refresh);break;
+    case 'skip-topic':state.skippedTopics.add(id);state.activeTopicId=null;renderCards();break;
+    case 'finish-topic': {
+      const topic=state.queue.topics.find(t=>t.id===id);if(!topic)return;
+      state.reviewTopicId=id;$('topicFeedback').reset();$('reviewContext').textContent=topic.title;
+      showDialog('reviewDialog');break;
+    }
+    case 'assess-question': {
+      const q=state.queue.questions.find(t=>t.id===id);if(!q||state.answeredQuestions.has(id))return;
+      state.attemptQuestionId=id;$('questionFeedback').reset();$('attemptContext').textContent=q.statement?.slice(0,140)||q.url||`Questão ${id}`;
+      showDialog('attemptDialog');break;
+    }
+    case 'archive-question':safe(()=>archive('questions',id,true));break;
+  }
+});
+
 $('subjectForm').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
-  await api('/subjects','POST',{name:$('subjectName').value.trim()});$('subjectForm').reset();
-  await loadBasics();toast('Matéria cadastrada.');
+  const id=$('subjectEditId').value;const data={name:$('subjectName').value.trim()};
+  await api(id?`/subjects/${id}`:'/subjects',id?'PATCH':'POST',data);
+  closeDialog('subjectDialog');await afterChange(id?'Matéria atualizada.':'Matéria salva. Agora cadastre um assunto para criar seus Cards.');
 });});
 $('topicForm').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
-  await api('/topics','POST',{
-    subject_id:Number($('subjectSelect').value),code:$('topicCode').value.trim()||null,
-    title:$('topicTitle').value.trim(),importance:Number($('topicImportance').value),
+  const id=$('topicEditId').value;
+  await api(id?`/topics/${id}`:'/topics',id?'PATCH':'POST',{
+    subject_id:Number($('subjectSelect').value),title:$('topicTitle').value.trim(),code:$('topicCode').value.trim()||null,importance:Number($('topicImportance').value),
   });
-  $('topicForm').reset();await loadBasics();await loadQueue();toast('Assunto incluído na pilha contínua de Cards.');
+  closeDialog('topicDialog');await afterChange(id?'Assunto atualizado.':'Assunto incluído na pilha de Cards.');
 });});
 $('questionForm').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
-  await api('/questions','POST',{
-    subject_id:Number($('questionSubject').value),
-    topic_id:$('questionTopic').value?Number($('questionTopic').value):null,
-    url:$('questionUrl').value.trim()||null,statement:$('questionText').value.trim()||null,
+  const id=$('questionEditId').value,url=$('questionUrl').value.trim(),statement=$('questionText').value.trim();
+  if(!url&&!statement)throw new Error('Informe o link ou o enunciado da questão.');
+  await api(id?`/questions/${id}`:'/questions',id?'PATCH':'POST',{
+    subject_id:Number($('questionSubject').value),topic_id:$('questionTopic').value?Number($('questionTopic').value):null,url:url||null,statement:statement||null,
   });
-  $('questionForm').reset();updateQuestionTopicOptions();await loadQueue();toast('Questão adicionada à pilha do caderno.');
+  closeDialog('questionEditorDialog');await afterChange(id?'Questão atualizada.':'Questão salva no caderno de erros.');
 });});
-$('logoutBtn').addEventListener('click',()=>safe(async()=>{await api('/auth/logout','POST');window.location.replace('/login');}));
+$('topicFeedback').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
+  const data=new FormData(event.currentTarget),session=await ensureSession();
+  await api(`/sessions/${session.id}/topic-reviews`,'POST',{
+    topic_id:state.reviewTopicId,grade:Number(data.get('grade')),difficulty:Number(data.get('difficulty')),
+    critical_gap:data.get('critical_gap')==='true',notes:String(data.get('notes')||'').trim()||null,
+  });
+  closeDialog('reviewDialog');state.activeTopicId=null;await afterChange('Avaliação salva no PostgreSQL. Próximo assunto recomendado.');
+});});
+$('questionFeedback').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
+  const data=new FormData(event.currentTarget),session=await ensureSession();
+  await api(`/sessions/${session.id}/question-attempts`,'POST',{
+    question_id:state.attemptQuestionId,is_correct:data.get('is_correct')==='true',confidence:Number(data.get('confidence')),
+    error_type:data.get('is_correct')==='false'&&data.get('error_type')?String(data.get('error_type')):null,
+    notes:String(data.get('notes')||'').trim()||null,
+  });
+  closeDialog('attemptDialog');await reloadAll({preserveQuestion:false});
+  const next=visibleQuestions().findIndex(q=>q.id!==state.attemptQuestionId&&!state.answeredQuestions.has(q.id));
+  if(next>=0){state.questionIndex=next;renderQuestions();}
+  notice('Avaliação da questão salva. Prioridades reajustadas.');
+});});
+
+parseRoute();
 safe(async()=>{
   const auth=await api('/auth/me');state.csrf=auth.csrf_token;$('accountName').textContent=auth.username;
-  await loadBasics();state.session=await api('/sessions/open');await loadQueue();
+  await reloadAll();
 });

@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import NewContentLog, Question, QuestionAttempt, Topic, TopicReview
+from app.models import NewContentLog, Question, QuestionAttempt, Topic, TopicReview, Subject
 
 
 def aware(dt: datetime) -> datetime:
@@ -107,10 +107,15 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         if value is not None and not (0 <= value <= 180):
             raise ValueError("Tempo de fila inválido.")
     now = aware(now or datetime.now(timezone.utc))
-    topics = db.scalars(select(Topic).order_by(Topic.id)).all()
-    # Arquivar apenas retira da fila; tentativas continuam preservadas no banco.
+    active_subject_ids = set(db.scalars(select(Subject.id).where(Subject.archived_at.is_(None))).all())
+    all_topics = db.scalars(select(Topic).order_by(Topic.id)).all()
+    topics = [t for t in all_topics if t.archived_at is None and t.subject_id in active_subject_ids]
+    active_topic_ids = {t.id for t in topics}
+    # Questões de matérias/assuntos arquivados também saem da pilha, sem perder histórico.
     questions = db.scalars(select(Question).order_by(Question.id)).all()
-    active_questions = [q for q in questions if q.archived_at is None]
+    active_questions = [q for q in questions if q.archived_at is None
+                        and (q.subject_id is None or q.subject_id in active_subject_ids)
+                        and (q.topic_id is None or q.topic_id in active_topic_ids)]
     topic_reviews = db.scalars(select(TopicReview).order_by(TopicReview.created_at, TopicReview.id)).all()
     attempts = db.scalars(select(QuestionAttempt).order_by(QuestionAttempt.created_at, QuestionAttempt.id)).all()
     new_content = db.scalars(select(NewContentLog).order_by(NewContentLog.created_at, NewContentLog.id)).all()

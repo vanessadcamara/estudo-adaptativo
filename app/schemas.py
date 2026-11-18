@@ -10,6 +10,11 @@ class SubjectIn(BaseModel):
 class SubjectOut(SubjectIn):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    archived_at: datetime | None = None
+
+
+class SubjectEdit(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
 
 
 class TopicIn(BaseModel):
@@ -22,6 +27,14 @@ class TopicIn(BaseModel):
 class TopicOut(TopicIn):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    archived_at: datetime | None = None
+
+
+class TopicEdit(BaseModel):
+    subject_id: int
+    title: str = Field(min_length=2, max_length=240)
+    code: str | None = Field(default=None, max_length=30)
+    importance: int = Field(default=3, ge=1, le=5)
 
 
 class QuestionIn(BaseModel):
@@ -50,8 +63,16 @@ class QuestionOut(BaseModel):
     archived_at: datetime | None = None
 
 
-class QuestionArchiveIn(BaseModel):
+class QuestionEdit(QuestionIn):
+    pass
+
+
+class ArchiveIn(BaseModel):
     archived: bool
+
+
+class QuestionArchiveIn(ArchiveIn):
+    pass
 
 
 class TopicReviewIn(BaseModel):
