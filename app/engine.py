@@ -1,11 +1,12 @@
-"""Revisão adaptativa contínua, evidências de domínio e manutenção obrigatória.
+"""Revisão adaptativa com filas independentes por matéria e prazos indicativos.
 
 Fórmula exclusiva dos Cards: P = 0,35D + 0,30T + 0,25E + 0,10I,
-com D, T, E e I sempre entre 0 e 100. A manutenção vencida é uma regra
-lexicográfica ANTERIOR à pontuação; não altera os pesos da fórmula.
+com D, T, E e I sempre entre 0 e 100. A manutenção vencida só tem
+precedência DENTRO da matéria selecionada. Não é obrigação de estudo.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from math import exp
 from typing import Any
 
 from sqlalchemy import select
@@ -59,6 +60,13 @@ def topic_interval(records: list[TopicReview]) -> int:
         base = 30 if grade4_streak(records) >= 2 else 14
     if getattr(last, 'difficulty', None) == 3:
         base = (base + 1) // 2
+    # A recuperação recente ainda pesa: uma nota boa após falhas repetidas
+    # precisa de mais evidência antes de recuperar um intervalo longo.
+    if len(records) > 1 and last.grade >= 3:
+        recent_lapses = sum(r.grade <= 2 or bool(getattr(r, 'critical_gap', False))
+                            for r in records[-4:-1])
+        if recent_lapses:
+            base = round(base * max(0.5, 1 - 0.18 * recent_lapses))
     return min(60, max(1, base))
 
 
@@ -76,7 +84,62 @@ def question_interval(records: list[QuestionAttempt]) -> int:
         if not record.is_correct or getattr(record, 'confidence', None) in (1, 2):
             break
         streak += 1
-    return (3, 7, 14, 30, 60)[min(max(0, streak - 1), 4)]
+    base = (3, 7, 14, 30, 60)[min(max(0, streak - 1), 4)]
+    # Erros anteriores limitam o salto logo após um acerto seguro isolado.
+    if len(records) > 1:
+        recent_errors = sum(not r.is_correct for r in records[-4:-1])
+        if recent_errors:
+            base = round(base * max(0.5, 1 - 0.2 * recent_errors))
+    return min(60, max(1, base))
+
+
+def forgetting_risk(days: float | None, interval: int, baseline: float) -> float | None:
+    """Estimativa heurística 0–100, não é probabilidade calibrada nem um ML.
+
+    Baseline deriva do desempenho observado; a componente temporal cresce
+    continuamente e alcança ~35% adicional do risco restante no vencimento.
+    Não atribuímos risco inventado a um item sem histórico.
+    """
+    if days is None:
+        return None
+    baseline = max(0.0, min(0.95, baseline))
+    remaining = (1 - baseline) * exp(-0.43 * max(0.0, days) / max(1, interval))
+    return round(100 * (1 - remaining), 1)
+
+
+def topic_forgetting_risk(records: list[TopicReview], days: float | None,
+                          interval: int) -> float | None:
+    if not records:
+        return None
+    last = records[-1]
+    recent = records[-4:]
+    lapses = sum(r.grade <= 2 or bool(getattr(r, 'critical_gap', False)) for r in recent)
+    baseline = 0.05 + 0.10 * (4 - last.grade) + 0.08 * lapses / len(recent)
+    if bool(getattr(last, 'critical_gap', False)):
+        baseline += 0.12
+    if getattr(last, 'difficulty', None) == 3:
+        baseline += 0.08
+    return forgetting_risk(days, interval, baseline)
+
+
+def question_forgetting_risk(records: list[QuestionAttempt], days: float | None,
+                             interval: int) -> float | None:
+    if not records:
+        return None
+    last = records[-1]
+    if not last.is_correct:
+        baseline = 0.62
+    else:
+        baseline = {1: 0.48, 2: 0.26, 3: 0.07, None: 0.22}.get(last.confidence, 0.22)
+    recent = records[-4:]
+    baseline += 0.16 * sum(not r.is_correct for r in recent) / len(recent)
+    return forgetting_risk(days, interval, baseline)
+
+
+def risk_level(risk: float | None) -> str:
+    if risk is None:
+        return 'sem_dados'
+    return 'alto' if risk >= 65 else 'moderado' if risk >= 35 else 'baixo'
 
 
 def pending_topic_gap(records: list[TopicReview]) -> bool:
@@ -172,11 +235,13 @@ def topic_priority_components(topic: Topic, history: list[TopicReview], days: fl
 
 
 def build_queue(db: Session, now: datetime | None = None, exclude_session_id: int | None = None,
-                topic_minutes: int | None = None, question_minutes: int | None = None) -> dict[str, Any]:
-    """Todos os itens na fila contínua; atrasos obrigatórios vêm antes dos demais.
+                topic_minutes: int | None = None, question_minutes: int | None = None,
+                subject_id: int | None = None) -> dict[str, Any]:
+    """Fila scoped da matéria selecionada. None = agregação legada sem metas.
 
-    `topic_minutes`/`question_minutes` são apenas compatibilidade com clientes
-    antigos. A UI não usa cronômetro nem impõe limites de tempo.
+    O frontend sempre informa subject_id; 0 representa questões antigas sem
+    matéria, em uma fila isolada. Nunca usamos atrasos para escolher matéria.
+    Os parâmetros de minutos são somente compatibilidade com clientes antigos.
     """
     for value in (topic_minutes, question_minutes):
         if value is not None and not (0 <= value <= 180):
@@ -184,12 +249,15 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     now = aware(now or datetime.now(timezone.utc))
     active_subject_ids = set(db.scalars(select(Subject.id).where(Subject.archived_at.is_(None))).all())
     all_topics = db.scalars(select(Topic).order_by(Topic.id)).all()
-    topics = [t for t in all_topics if t.archived_at is None and t.subject_id in active_subject_ids]
+    topic_subject_lookup = {t.id: t.subject_id for t in all_topics}
+    topics = [t for t in all_topics if t.archived_at is None and t.subject_id in active_subject_ids
+              and (subject_id is None or t.subject_id == subject_id)]
     active_topic_ids = {t.id for t in topics}
     questions = db.scalars(select(Question).order_by(Question.id)).all()
     active_questions = [q for q in questions if q.archived_at is None
                         and (q.subject_id is None or q.subject_id in active_subject_ids)
-                        and (q.topic_id is None or q.topic_id in active_topic_ids)]
+                        and (q.topic_id is None or q.topic_id in active_topic_ids)
+                        and (subject_id is None or (q.subject_id or topic_subject_lookup.get(q.topic_id) or 0) == subject_id)]
     topic_reviews = db.scalars(select(TopicReview).order_by(TopicReview.created_at, TopicReview.id)).all()
     attempts = db.scalars(select(QuestionAttempt).order_by(QuestionAttempt.created_at, QuestionAttempt.id)).all()
     new_content = db.scalars(select(NewContentLog).order_by(NewContentLog.created_at, NewContentLog.id)).all()
@@ -222,6 +290,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
         interval = topic_interval(history) if mastered else min(30, topic_interval(history))
         overdue_days = max(0.0, days - interval) if days is not None else 0.0
+        risk = topic_forgetting_risk(history, days, interval)
         maintenance_required = days is not None and days >= interval
         components = topic_priority_components(topic, history, days, interval)
         priority = round(0.35 * components['D'] + 0.30 * components['T'] +
@@ -232,7 +301,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         elif not history:
             reason = 'Primeira revisão após estudo inicial' if maintenance_required else 'Primeira revisão programada'
         elif maintenance_required:
-            reason = 'Revisão obrigatória: intervalo de manutenção atingido'
+            reason = 'Prazo de revisão atingido — prioridade nesta matéria'
         elif not evidence['no_critical_gaps']:
             reason = 'Erro conceitual pendente — reforçar antes de avançar'
         elif mastered:
@@ -247,6 +316,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'attempts': len(history), 'days_since': round(days, 1) if days is not None else None,
             'interval_days': interval, 'due': maintenance_required,
             'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
+            'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'mastered': mastered, 'learning_state': state, 'mastery_evidence': evidence,
             'priority': priority, 'priority_components': components,
             'next_due_at': next_due, 'reason': reason,
@@ -261,6 +331,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         last = history[-1] if history else None
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
+        risk = question_forgetting_risk(history, days, interval)
         ratio = days / interval if days is not None else 0.0
         maintenance_required = days is not None and days >= interval
         correct = sum(int(r.is_correct) for r in history)
@@ -292,7 +363,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         elif not history:
             reason = 'Questão ainda não reavaliada'
         elif maintenance_required:
-            reason = 'Revisão obrigatória: prazo de manutenção atingido'
+            reason = 'Prazo de revisão atingido — prioridade nesta matéria'
         else:
             reason = 'Manutenção espaçada'
         next_due = (aware(last.created_at) + timedelta(days=interval)).isoformat() if last else None
@@ -305,6 +376,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'days_since': round(days, 1) if days is not None else None,
             'interval_days': interval, 'due': maintenance_required,
             'maintenance_required': maintenance_required,
+            'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'overdue_days': round(max(0.0, days - interval), 2) if days is not None else 0.0,
             'priority': priority, 'next_due_at': next_due, 'reason': reason,
             'archive_suggested': archive_suggested,
@@ -312,7 +384,8 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                                if archive_suggested else None),
         })
 
-    # Regra rígida de precedência: obrigatórios antes de qualquer não vencido.
+    # A precedência é exclusivamente LOCAL À MATÉRIA; nunca agenda ou escolhe
+    # disciplinas, apenas ordena os itens da matéria já escolhida.
     # Dentro de cada grupo: maior atraso absoluto, depois prioridade P.
     topic_queue.sort(key=lambda x: (not x['maintenance_required'],
                                     -x['overdue_days'] if x['maintenance_required'] else 0,
@@ -323,12 +396,12 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
     visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
     return {
-        'topics': visible_topics, 'questions': visible_questions,
+        'topics': visible_topics, 'questions': visible_questions, 'subject_id': subject_id,
         'topic_minutes': topic_minutes, 'question_minutes': question_minutes,
         'total_topics': len(topics), 'total_questions': len(active_questions),
         'archived_questions': len(questions) - len(active_questions),
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'P=0,35D+0,30T+0,25E+0,10I (0–100); manutenção vencida acima da pontuação; sem limite diário.',
+        'note': 'P=0,35D+0,30T+0,25E+0,10I; prazo vencido tem prioridade só na matéria selecionada; risco heurístico não calibrado; sem revisão obrigatória.',
     }

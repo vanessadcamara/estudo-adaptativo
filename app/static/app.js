@@ -1,11 +1,11 @@
-/* v0.6 — fórmula exata, manutenção obrigatória e domínio verificado. */
+/* v0.7 — seleção explícita da matéria, filas isoladas e risco heurístico. */
 'use strict';
 const state = {
   csrf: null, session: null,
   subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [],
-  queue: {topics: [], questions: []},
-  currentTab: 'cards', settingsTab: 'cards', cardsSubject: 'all', errorsSubject: 'all',
-  activeTopicId: null, questionIndex: 0,
+  cardsQueue: {topics: [], questions: []}, errorsQueue: {topics: [], questions: []},
+  currentTab: 'cards', settingsTab: 'cards', cardsSubject: '', errorsSubject: '',
+  activeTopicId: null, questionIndex: 0, queueRequest: {cards: 0, errors: 0},
   skippedTopics: new Set(), reviewedTopics: new Set(), answeredQuestions: new Set(),
   reviewTopicId: null, attemptQuestionId: null,
 };
@@ -74,11 +74,11 @@ function updateSelect(id, html, fallback='') {
 }
 function updateOptions() {
   const active = state.subjects.map(s=>({id:s.id,label:s.name}));
-  const allOption = '<option value="all">Todas as matérias</option>';
-  updateSelect('cardsSubject', allOption + selectOptions(active,'',false),state.cardsSubject);
-  updateSelect('errorsSubject', allOption + selectOptions(active,'',false) + '<option value="unassigned">Sem matéria</option>',state.errorsSubject);
-  state.cardsSubject = $('cardsSubject').value || 'all';
-  state.errorsSubject = $('errorsSubject').value || 'all';
+  // Nenhum assunto de outra matéria entra na fila: escolha explícita.
+  updateSelect('cardsSubject', selectOptions(active,'Escolha uma matéria'),state.cardsSubject);
+  updateSelect('errorsSubject', selectOptions(active,'Escolha uma matéria') + '<option value="unassigned">Sem matéria (legado)</option>',state.errorsSubject);
+  state.cardsSubject = $('cardsSubject').value || '';
+  state.errorsSubject = $('errorsSubject').value || '';
   updateSelect('topicSubjectFilter', '<option value="all">Todas as matérias</option>'+selectOptions(state.allSubjects.map(s=>({id:s.id,label:s.name})),'',false),'all');
   updateSelect('subjectSelect', selectOptions(active, 'Selecione a matéria'));
   updateSelect('questionSubject', selectOptions(active, 'Selecione a matéria'));
@@ -90,22 +90,35 @@ function updateQuestionTopics(selected=null) {
   updateSelect('questionTopic', selectOptions(topics,'Sem assunto específico'));
   if (selected != null && topics.some(t=>t.id===selected)) $('questionTopic').value = String(selected);
 }
+const emptyQueue = () => ({topics: [], questions: []});
+async function loadSelectedQueue(kind) {
+  const subject = kind === 'cards' ? state.cardsSubject : state.errorsSubject;
+  const request = ++state.queueRequest[kind];
+  const key = kind === 'cards' ? 'cardsQueue' : 'errorsQueue';
+  if (!subject) {state[key]=emptyQueue(); return;}
+  const subjectId = subject === 'unassigned' ? 0 : Number(subject);
+  const queue = await api(`/queue?subject_id=${subjectId}`);
+  // Uma resposta antiga nunca substitui a fila após trocar rapidamente a matéria.
+  if (state.queueRequest[kind] === request &&
+      (kind === 'cards' ? state.cardsSubject : state.errorsSubject) === subject) state[key]=queue;
+}
 async function reloadAll({preserveQuestion=true}={}) {
   const oldQuestion = preserveQuestion ? visibleQuestions()[state.questionIndex]?.id : null;
-  const [allSubjects,allTopics,allQuestions,queue,openSession] = await Promise.all([
+  const [allSubjects,allTopics,allQuestions,openSession] = await Promise.all([
     api('/subjects?include_archived=true'),api('/topics?include_archived=true'),
-    api('/questions?include_archived=true'),api('/queue'),api('/sessions/open'),
+    api('/questions?include_archived=true'),api('/sessions/open'),
   ]);
   state.allSubjects=allSubjects;state.allTopics=allTopics;state.allQuestions=allQuestions;
   state.subjects=allSubjects.filter(s=>!s.archived_at);
   state.topics=allTopics.filter(t=>!t.archived_at && state.subjects.some(s=>s.id===t.subject_id));
-  state.queue=queue;state.session=openSession;
+  state.session=openSession;
   if (openSession) {
     const progress=await api(`/sessions/${openSession.id}/progress`);
     state.reviewedTopics = new Set(progress.topics); state.answeredQuestions = new Set(progress.questions);
   } else {state.reviewedTopics = new Set();state.answeredQuestions = new Set();}
   updateOptions();renderCatalog();renderManagedQuestions();
-  const updatedIndex = state.queue.questions.findIndex(q=>q.id===oldQuestion);
+  await Promise.all([loadSelectedQueue('cards'),loadSelectedQueue('errors')]);
+  const updatedIndex = visibleQuestions().findIndex(q=>q.id===oldQuestion);
   state.questionIndex = updatedIndex >= 0 ? updatedIndex : 0;
   renderCards();renderQuestions();
 }
@@ -124,17 +137,18 @@ function renderManagedQuestions() {
   const records=state.allQuestions.filter(q=>Boolean(q.archived_at)===archived);
   $('managedQuestionsList').innerHTML=records.length?records.map(q=>`<div class="list-item"><div class="item-text"><strong>${esc(q.url||q.statement?.slice(0,100)||`Questão ${q.id}`)}</strong><small>${esc(nameOf(q.subject_id))}</small></div><div class="item-actions">${q.archived_at?'':`<button type="button" class="button quiet small" data-edit-question="${q.id}">Editar</button>`}<button type="button" class="button ${q.archived_at?'quiet':'danger-outline'} small" data-archive-question="${q.id}" data-value="${!q.archived_at}">${q.archived_at?'Restaurar':'Arquivar'}</button></div></div>`).join(''):'<p class="empty-list">Nenhuma questão nessa lista.</p>';
 }
-function matches(subjectId,chosen){return chosen==='all'||(chosen==='unassigned'&&subjectId==null)||String(subjectId)===chosen;}
-function availableTopics(){return state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject)&&!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
-function visibleQuestions(){return state.queue.questions.filter(q=>matches(q.subject_id,state.errorsSubject));}
+function availableTopics(){return state.cardsQueue.topics.filter(t=>!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
+function visibleQuestions(){return state.errorsQueue.questions;}
 function priority(entry) {return entry.priority>=58?'Alta':entry.priority>=38?'Média':'Baixa';}
 function dateInfo(entry) {return entry.days_since==null?'Sem avaliações anteriores':`Última avaliação: ${entry.days_since<1?'há menos de 1 dia':`há ${Math.floor(entry.days_since)} dia(s)`}`;}
 const STATE_LABELS = {em_aprendizagem:'Em aprendizagem',em_consolidacao:'Em consolidação',dominado:'Dominado'};
 function meta(entry){
-  const status=entry.maintenance_required?'Revisão obrigatória':
+  const status=entry.maintenance_required?'Prazo atingido nesta matéria':
     (entry.learning_state ? (STATE_LABELS[entry.learning_state]||'Em aprendizagem'):
     entry.due?'Precisa de revisão':'Em manutenção');
-  return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)} · ${Number(entry.priority).toFixed(1)}/100</strong></span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span></div>`;
+  const risk=entry.forgetting_risk_percent == null ? 'Risco: sem histórico' :
+    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (heurístico)`;
+  return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)} · ${Number(entry.priority).toFixed(1)}/100</strong></span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
 }
 function masteryDetails(entry) {
   const c=entry.priority_components, e=entry.mastery_evidence;
@@ -150,7 +164,8 @@ function masteryDetails(entry) {
   const breakdown=`D ${c.D.toFixed(1)} · T ${c.T.toFixed(1)} · E ${c.E.toFixed(1)} · I ${c.I.toFixed(1)}`;
   return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
     <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
-    <p>Manutenção a cada ${entry.interval_days} dia(s). Se o prazo vencer, o assunto sobe acima dos não vencidos, independentemente da pontuação.</p>
+    <p>Intervalo adaptativo: ${entry.interval_days} dia(s). Se vencer, o assunto sobe na fila <strong>somente desta matéria</strong>. Você escolhe quando voltar a estudá-la.</p>
+    <p>O risco é uma estimativa baseada em desempenho, confiança/esforço e tempo decorrido; não é uma probabilidade validada.</p>
     <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
     <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
     <p class="panel-help">Novidade e variedade são confirmadas por você; não são inferidas automaticamente dos links.</p>
@@ -158,11 +173,12 @@ function masteryDetails(entry) {
 }
 function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
 function renderCards() {
-  const candidates=availableTopics();const all=state.queue.topics.filter(t=>matches(t.subject_id,state.cardsSubject));
+  const candidates=availableTopics();const all=state.cardsQueue.topics;
   const topic=candidates.find(t=>t.id===state.activeTopicId)||candidates[0];
   if (!topic) {
     state.activeTopicId=null;
     $('topicStudyCard').innerHTML=!state.subjects.length?empty('Comece cadastrando sua primeira matéria','O banco ainda não tem matérias. Abra Configurações para cadastrar e depois adicione assuntos.','new-subject','Cadastrar matéria'):
+      !state.cardsSubject?empty('Escolha a matéria que quer estudar','Cada matéria tem sua própria fila. Nenhum vencimento força você a escolher uma disciplina.'): 
       !all.length?empty('Cadastre um assunto para começar','Sua matéria está cadastrada, mas ainda não há assuntos disponíveis na pilha.','new-topic','Cadastrar assunto'):
       empty('Você percorreu esta pilha','Os itens avaliados e pulados continuam salvos. Atualize as prioridades para fazer uma nova passagem.','refresh','Reorganizar pilha');
     return;
@@ -177,7 +193,7 @@ function renderQuestions() {
   $('questionPrevious').disabled=!q||state.questionIndex===0;
   $('questionNext').disabled=!q||state.questionIndex===questions.length-1;
   $('questionPosition').textContent=q?`${state.questionIndex+1} de ${questions.length}`:'Sem questões';
-  if(!q){$('questionStudyCard').innerHTML=empty('Seu caderno está vazio','Cadastre uma matéria e o link de uma questão errada para começar a revisão.','new-question','Adicionar questão');return;}
+  if(!q){$('questionStudyCard').innerHTML=state.errorsSubject?empty('Seu caderno está vazio nesta matéria','Cadastre o link de uma questão errada nessa matéria para começar a revisão.','new-question','Adicionar questão'):empty('Escolha a matéria do caderno de erros','Os vencimentos só ordenam questões da matéria que você selecionar.');return;}
   const done=state.answeredQuestions.has(q.id);
   $('questionStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">LINK RECOMENDADO · ${state.questionIndex+1}/${questions.length}</div><h3>${esc(q.statement?q.statement.slice(0,150):'Retome esta questão')}</h3><p class="card-description">${esc(q.reason)}.</p>${q.url?`<a class="link-question" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">Abrir link da questão ↗</a>`:''}${q.statement&&q.statement.length>150?`<p class="statement">${esc(q.statement)}</p>`:''}${meta(q)}${q.archive_suggested?`<div class="suggestion"><strong>Arquivamento sugerido</strong><p>${esc(q.archive_reason||'Você demonstrou domínio consistente.')}</p></div>`:''}<div class="actions"><button type="button" class="button primary" data-action="assess-question" data-id="${q.id}" ${done?'disabled':''}>${done?'Avaliação salva':'Avaliar desempenho'}</button><button type="button" class="button outline" data-action="archive-question" data-id="${q.id}">${q.archive_suggested?'Arquivar link recomendado':'Arquivar link'}</button></div>${done?'<p class="helper">Esta questão já foi avaliada nesta passagem. O refresh permite um novo ciclo, sem apagar a tentativa.</p>':''}</article>`;
 }
@@ -228,8 +244,8 @@ $('showArchivedCatalog').addEventListener('change',renderCatalog);
 $('topicSubjectFilter').addEventListener('change',renderCatalog);
 $('manageQuestionsFilter').addEventListener('change',renderManagedQuestions);
 $('questionSubject').addEventListener('change',()=>updateQuestionTopics());
-$('cardsSubject').addEventListener('change',event=>{state.cardsSubject=event.target.value;state.skippedTopics.clear();state.activeTopicId=null;renderCards();});
-$('errorsSubject').addEventListener('change',event=>{state.errorsSubject=event.target.value;state.questionIndex=0;renderQuestions();});
+$('cardsSubject').addEventListener('change',event=>safe(async()=>{state.cardsSubject=event.target.value;state.skippedTopics.clear();state.activeTopicId=null;state.cardsQueue=emptyQueue();renderCards();await loadSelectedQueue('cards');renderCards();}));
+$('errorsSubject').addEventListener('change',event=>safe(async()=>{state.errorsSubject=event.target.value;state.questionIndex=0;state.errorsQueue=emptyQueue();renderQuestions();await loadSelectedQueue('errors');renderQuestions();}));
 $('questionPrevious').addEventListener('click',()=>{if(state.questionIndex>0){state.questionIndex--;renderQuestions();}});
 $('questionNext').addEventListener('click',()=>{if(state.questionIndex<visibleQuestions().length-1){state.questionIndex++;renderQuestions();}});
 $('cardsRefresh').addEventListener('click',()=>safe(refresh));
@@ -253,12 +269,12 @@ document.addEventListener('click',event=>{
     case 'refresh':safe(refresh);break;
     case 'skip-topic':state.skippedTopics.add(id);state.activeTopicId=null;renderCards();break;
     case 'finish-topic': {
-      const topic=state.queue.topics.find(t=>t.id===id);if(!topic)return;
+      const topic=state.cardsQueue.topics.find(t=>t.id===id);if(!topic)return;
       state.reviewTopicId=id;$('topicFeedback').reset();$('reviewContext').textContent=topic.title;
       showDialog('reviewDialog');break;
     }
     case 'assess-question': {
-      const q=state.queue.questions.find(t=>t.id===id);if(!q||state.answeredQuestions.has(id))return;
+      const q=state.errorsQueue.questions.find(t=>t.id===id);if(!q||state.answeredQuestions.has(id))return;
       state.attemptQuestionId=id;$('questionFeedback').reset();$('attemptContext').textContent=q.statement?.slice(0,140)||q.url||`Questão ${id}`;
       showDialog('attemptDialog');break;
     }

@@ -1,9 +1,9 @@
-# Especificação funcional — Estudo Adaptativo BB v0.6
+# Especificação funcional — Estudo Adaptativo BB v0.7
 
 ## Princípios
 
 - Não há cronômetro, sessões fixas por data, cobrança diária, limite de tópicos por dia ou penalidade por ausência.
-- Toda matéria tem uma pilha **completa e contínua** de assuntos. Todo caderno tem uma pilha **completa e contínua** de questões não arquivadas.
+- Toda matéria tem **filas independentes** de Cards e questões ativas, sem mistura de vencimentos, pesos ou históricos entre matérias. Nenhuma fila ativa antes de selecionar a matéria.
 - A avaliação é explícita; itens não vistos ou pulados não geram nota, erro nem tentativa.
 - Refresh recalcula prioridades com o histórico acumulado e o tempo corrido; pode ser usado quando desejar.
 - Dados e tentativas são preservados; remover questão da pilha significa arquivar de forma reversível.
@@ -12,7 +12,7 @@
 
 **Controles:** dropdown `Matéria`, botão `Atualizar prioridades`, cartão do assunto recomendado, ações `Marcar como finalizado` e `Pular por agora`.
 
-**Pilha:** `Todas as matérias` ou uma matéria específica. Todos os assuntos aparecem em ordenação dinâmica por prioridade. Não são exibidos totalizadores de rodada, meta diária, chips de intervalos nem contagem de revisões do dia.
+**Pilha:** a matéria precisa ser selecionada explicitamente; não existe opção “Todas as matérias” na interface de estudo. Somente assuntos da matéria selecionada aparecem em ordenação dinâmica por prioridade. Não são exibidos totalizadores de rodada, meta diária, chips de intervalos nem contagem de revisões do dia.
 
 **Ao finalizar:** abre-se uma tela modal própria com um questionário com os seguintes campos:
 
@@ -29,9 +29,9 @@
 
 ## Tela 2 — Caderno de erros
 
-**Controles:** dropdown `Matéria`, botão `Atualizar prioridades`, card de uma questão única, `Anterior` e `Próxima`.
+**Controles:** dropdown `Matéria` de seleção obrigatória, botão `Atualizar prioridades`, card de uma questão única, `Anterior` e `Próxima`. A matéria do Caderno de erros pode ser distinta da selecionada nos Cards; questões legadas sem matéria permanecem em grupo separado.
 
-**Card:** link (quando informado), enunciado (quando informado), motivo da recomendação, prioridade e data relativa da última avaliação. Nenhuma ligação com dias fixos de estudo.
+**Card:** link (quando informado), enunciado (quando informado), motivo da recomendação, prioridade, risco heurístico de esquecimento e data relativa da última avaliação. Nenhuma ligação com dias fixos de estudo.
 
 **Ao clicar em Avaliar desempenho:** abre-se uma janela com o formulário:
 
@@ -73,7 +73,7 @@ Não há formulário de registrar conteúdo novo. A API legada permanece para co
 - **E**: frequência de notas 0–2 ou lacuna crítica no histórico (0–100); sem histórico, E=50.
 - **I**: importância cadastrada 1–5, normalizada por `(importância−1)×25`.
 
-A fórmula não contém bônus. **Antes da ordenação por P**, o sistema coloca na frente todos os tópicos que atingiram seu **intervalo individual de manutenção**. Dentro do grupo de vencidos ordena pelo maior atraso e, então, por P. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
+A fórmula não contém bônus. **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro do grupo de vencidos, maior atraso vem antes e P desempata. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
 
 **Estados de aprendizagem:**
 
@@ -83,17 +83,33 @@ A fórmula não contém bônus. **Antes da ordenação por P**, o sistema coloca
 
 **Questões:** prioridade considerando insucesso suavizado (36%), frequência histórica de erros (19%), tempo relativo ao intervalo (29%), incerteza por amostra pequena (9%), bônus de cobertura (até 7%) e reforço para erros recorrentes (12%). A confiança reduz o valor de acertos chutados. Os intervalos sugeridos chegam até 60 dias; **não há impedimento de revisitar antes**.
 
-A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com manutenção vencida antes das demais questões; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
+A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com vencimento à frente apenas das demais questões da mesma matéria selecionada; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
+
+### Risco de esquecimento e evolução dos intervalos — v0.7
+
+- Cada Card ou questão já avaliada apresenta `forgetting_risk_percent` (0–100) e `forgetting_risk_level` (`baixo`, `moderado`, `alto`). Sem avaliação: risco nulo (`null`), nível `sem_dados`.
+- Estimativa: `risco = 100 × [1 − (1 − b) × exp(−0,43 × d / max(1,i))]`; `d` é o número de dias desde a última avaliação; `i` é o intervalo atual em dias; `b` é o risco inicial heurístico que depende da última nota, dificuldade e lapsos (Cards) ou do último resultado, confiança e erros recentes (Caderno). O termo temporal cresce com o tempo. É um indicador de apoio, **não** uma previsão probabilística calibrada.
+- Os intervalos individuais mantêm as regras v0.6 como base e recebem ajuste conservador quando houver falhas recentes anteriores ao último sucesso. Acertos seguros repetidos progressivamente elevam intervalos das questões até 60 dias; notas baixas e lapsos críticos encurtam o intervalo de assuntos. O limite de 30 dias para não dominados permanece.
+- O risco informativo não cria novo termo na fórmula `P` de Cards nem na pontuação do Caderno. Seu uso quantitativo em prioridades, com importância e tempo disponível, fica reservado para evolução futura após avaliação/calibração.
+- Nenhum agendamento, notificação, penalidade ou cobrança diária decorre de `next_due_at` ou `maintenance_required` (nome técnico mantido por compatibilidade).
+
+### Isolamento obrigatório das filas — v0.7
+
+- `/api/queue?subject_id=ID` e `/api/sessions/{id}/queue?subject_id=ID` retornam somente assuntos e questões da matéria selecionada. `ID=0` isola questões legadas sem matéria.
+- O frontend mantém duas filas de estado separadas: Cards e Caderno de erros. A seleção precisa ser explícita e pode ser diferente entre as duas telas.
+- Pesos, notas, erros, confiança, importância e vencimentos de uma matéria jamais alteram o cálculo ou a ordenação da outra. Testes automatizados cobrem regressões de isolamento.
+- A rota sem filtro continua somente para compatibilidade de clientes anteriores; a interface não a utiliza para gerar recomendações.
 
 ## Persistência e compatibilidade
 
 - Dados: PostgreSQL, SQLAlchemy + Alembic; login e histórico existentes são preservados.
-- Migração nova: `0006_mastery_evidence.py` adiciona `explained_without_consulting` e `applied_to_new_questions` em `topic_reviews`. Os registros antigos são preservados, com os novos campos iniciando em `false`. Migrações `0005` e anteriores seguem intactas.
+- Migração anterior: `0006_mastery_evidence.py` adiciona `explained_without_consulting` e `applied_to_new_questions` em `topic_reviews`. Os registros antigos são preservados, com os novos campos iniciando em `false`. Migrações `0005` e anteriores seguem intactas.
 - APIs de atualização: `PATCH` para edição e para arquivamento/restauração de `/api/subjects/{id}`, `/api/topics/{id}`, `/api/questions/{id}`. Os endpoints `/archive` usam `{"archived":true|false}`.
+- Não há migração `0007` (nenhuma coluna ou tabela foi adicionada); os campos de risco são computados em cada consulta a partir das avaliações persistidas.
 - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
 - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
 
-## Garantias práticas de funcionamento (v0.6)
+## Garantias práticas de funcionamento (v0.7)
 
 - Nenhum cadastro fica somente no estado JavaScript. O formulário chama a API e recebe confirmação de `db.commit()`.
 - Todos os dados são recarregados do PostgreSQL ao abrir o sistema, sem depender do cache do navegador.

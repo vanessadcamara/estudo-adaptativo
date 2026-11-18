@@ -156,5 +156,5 @@ def test_frontend_shows_state_formula_and_evidence_fields(client):
     assert 'name="explained_without_consulting"' in html
     assert 'name="applied_to_new_questions"' in html
     assert 'Entender prioridade e critérios de domínio' in script
-    assert 'Revisão obrigatória' in script
+    assert 'Prazo atingido nesta matéria' in script
     assert 'Em consolidação' in script and 'Dominado' in script

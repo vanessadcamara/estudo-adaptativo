@@ -24,7 +24,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.6.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.7.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -302,16 +302,31 @@ def session_progress(session_id: int, db: Session = Depends(get_db)):
 
 @api.get("/sessions/{session_id}/queue")
 def session_queue(session_id: int, topic_minutes: int | None = Query(None, ge=0, le=180),
-                  question_minutes: int | None = Query(None, ge=0, le=180), db: Session = Depends(get_db)):
+                  question_minutes: int | None = Query(None, ge=0, le=180),
+                  subject_id: int | None = Query(None, ge=0), db: Session = Depends(get_db)):
     get_open_session_or_409(db, session_id)
-    return build_queue(db, exclude_session_id=session_id,
+    validate_queue_subject(db, subject_id)
+    return build_queue(db, exclude_session_id=session_id, subject_id=subject_id,
                        topic_minutes=topic_minutes, question_minutes=question_minutes)
+
+
+def validate_queue_subject(db: Session, subject_id: int | None) -> None:
+    if subject_id is None or subject_id == 0:  # 0 = caixa legada de questões sem matéria
+        return
+    subject = db.get(Subject, subject_id)
+    if subject is None or subject.archived_at is not None:
+        raise HTTPException(404, 'Matéria ativa não encontrada.')
 
 
 @api.get("/queue")
 def preview_queue(topic_minutes: int | None = Query(None, ge=0, le=180),
-                  question_minutes: int | None = Query(None, ge=0, le=180), db: Session = Depends(get_db)):
-    return build_queue(db, topic_minutes=topic_minutes, question_minutes=question_minutes)
+                  question_minutes: int | None = Query(None, ge=0, le=180),
+                  subject_id: int | None = Query(None, ge=0), db: Session = Depends(get_db)):
+    # Sem subject_id, preserva contrato da API v0.6 para clientes antigos;
+    # o estudo na interface v0.7 usa sempre uma matéria explicitamente escolhida.
+    validate_queue_subject(db, subject_id)
+    return build_queue(db, subject_id=subject_id,
+                       topic_minutes=topic_minutes, question_minutes=question_minutes)
 
 
 @api.post("/sessions/{session_id}/topic-reviews", status_code=status.HTTP_201_CREATED)
