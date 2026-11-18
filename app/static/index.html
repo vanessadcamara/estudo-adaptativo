@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Estudo Adaptativo • Banco do Brasil</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div><div class="eyebrow">SEU PLANO DE ESTUDOS</div><h1>Estudo Adaptativo <span>BB</span></h1>
+        <p>Revisão inteligente, caderno de erros e progresso que não se perde.</p></div>
+      <div id="sessionBadge" class="pill">Nenhuma sessão aberta</div>
+    </header>
+    <section id="message" class="message" role="status" aria-live="polite" hidden></section>
+    <div class="stats" id="stats"></div>
+    <section class="panel agenda">
+      <div><h2>Seu estudo de hoje</h2><p>Ritmo sugerido: duas horas, sem cobrança por dias de pausa.</p></div>
+      <div class="time-blocks"><div><strong>60 min</strong><small>Revisão</small></div><div><strong>60 min</strong><small>Conteúdo novo</small></div></div>
+      <div class="actions"><button id="startBtn" class="primary">Iniciar / retomar sessão</button><button id="refreshBtn" class="outline" disabled>↻ Refresh e finalizar</button></div>
+    </section>
+    <div class="two-col">
+      <section class="panel">
+        <div class="section-head"><div><h2>Fila A · Explicar sem consulta</h2><p>40 minutos sugeridos · notas de recuperação de 0 a 4</p></div><span class="emoji">🧠</span></div>
+        <div id="topicQueue" class="queue"></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><div><h2>Fila B · Caderno de erros</h2><p>20 minutos sugeridos · maior prioridade para erros recorrentes</p></div><span class="emoji">📝</span></div>
+        <div id="questionQueue" class="queue"></div>
+      </section>
+    </div>
+    <section class="panel">
+      <h2>Conteúdo novo · 60 min</h2><p>Após a videoaula, registre o tópico. Ele entra na fila de revisões sem exigir nota agora.</p>
+      <form id="newContentForm" class="inline-form"><label>Tópico <select id="studyTopic" required></select></label>
+        <label>Minutos <input id="studyMinutes" type="number" min="1" max="180" value="60" required /></label>
+        <button class="secondary" type="submit">Registrar estudo</button></form>
+    </section>
+    <div class="two-col">
+      <section class="panel"><h2>Cadastrar matéria e tópico</h2><p>Ex.: Conhecimentos Bancários → A1 · Sistema Financeiro Nacional.</p>
+        <form id="subjectForm" class="stack-form"><label>Matéria <input id="subjectName" placeholder="Conhecimentos Bancários" maxlength="120" required /></label><button type="submit" class="secondary">Adicionar matéria</button></form>
+        <form id="topicForm" class="stack-form bordered"><label>Matéria <select id="subjectSelect" required></select></label>
+          <div class="inline-form"><label>Código (opcional) <input id="topicCode" maxlength="30" placeholder="A1" /></label><label>Importância (1–5) <input id="topicImportance" type="number" min="1" max="5" value="3" required /></label></div>
+          <label>Nome do tópico <input id="topicTitle" placeholder="Sistema Financeiro Nacional" maxlength="240" required /></label>
+          <button type="submit" class="secondary">Adicionar tópico</button></form>
+      </section>
+      <section class="panel"><h2>Adicionar questão errada</h2><p>Basta colar o link. Se a plataforma exigir login, você também pode colar o enunciado.</p>
+        <form id="questionForm" class="stack-form"><label>Link <input id="questionUrl" type="url" placeholder="https://..." /></label>
+          <label>Enunciado (opcional) <textarea id="questionText" rows="3" placeholder="Cole aqui, se preferir..."></textarea></label>
+          <label>Associar a tópico (opcional) <select id="questionTopic"></select></label>
+          <button type="submit" class="secondary">Guardar no caderno</button></form>
+        <p class="hint">Sem etiquetas obrigatórias. Não buscamos conteúdo em sites protegidos por login.</p>
+      </section>
+    </div>
+    <section class="panel"><h2>Como funciona o refresh?</h2><p>Encerra o lote atual, salva as avaliações realizadas e recalcula as prioridades. Se você ficar uma semana sem revisar, o sistema usa o tempo transcorrido quando retornar — sem registrar faltas, sem zerar progresso e sem penalizar o que não coube na sessão.</p><div id="lastSummary" class="summary"></div></section>
+    <footer>Dados armazenados no seu PostgreSQL · Configuração local · Sem credenciais no GitHub</footer>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

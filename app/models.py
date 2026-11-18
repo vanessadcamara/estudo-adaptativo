@@ -1,0 +1,85 @@
+"""Modelos persistentes: eventos de estudo nunca são apagados no refresh."""
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Subject(Base):
+    __tablename__ = "subjects"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    topics: Mapped[list["Topic"]] = relationship(back_populates="subject")
+
+
+class Topic(Base):
+    __tablename__ = "topics"
+    __table_args__ = (UniqueConstraint("subject_id", "code", name="uq_topic_subject_code"), CheckConstraint("importance BETWEEN 1 AND 5", name="ck_topic_importance"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="RESTRICT"), nullable=False)
+    code: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    subject: Mapped[Subject] = relationship(back_populates="topics")
+
+
+class Question(Base):
+    __tablename__ = "questions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic_id: Mapped[int | None] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
+    statement: Mapped[str | None] = mapped_column(Text, nullable=True)
+    choices: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    topic: Mapped[Topic | None] = relationship()
+
+
+class StudySession(Base):
+    __tablename__ = "study_sessions"
+    __table_args__ = (CheckConstraint("status IN ('open', 'closed')", name="ck_session_status"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="open", nullable=False)
+    refresh_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class TopicReview(Base):
+    __tablename__ = "topic_reviews"
+    __table_args__ = (UniqueConstraint("session_id", "topic_id", name="uq_session_topic_review"), CheckConstraint("grade BETWEEN 0 AND 4", name="ck_review_grade"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=False)
+    grade: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class QuestionAttempt(Base):
+    __tablename__ = "question_attempts"
+    __table_args__ = (UniqueConstraint("session_id", "question_id", name="uq_session_question_attempt"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
+    question_id: Mapped[int] = mapped_column(ForeignKey("questions.id", ondelete="RESTRICT"), nullable=False)
+    is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class NewContentLog(Base):
+    __tablename__ = "new_content_logs"
+    __table_args__ = (CheckConstraint("minutes BETWEEN 1 AND 180", name="ck_new_content_minutes"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("study_sessions.id", ondelete="RESTRICT"), nullable=False)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="RESTRICT"), nullable=False)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
