@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8fc">
   <title>Estudo Adaptativo BB · Pilhas contínuas</title>
-  <link rel="stylesheet" href="/static/style.css?v=7">
-  <script src="/static/app.js?v=7" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=8">
+  <script src="/static/app.js?v=8" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -37,6 +37,7 @@
           <label class="field filter-field">Matéria<select id="errorsSubject" aria-label="Matéria do caderno"><option value="">Escolha uma matéria</option></select></label>
           <button type="button" class="button outline" id="errorsRefresh">Atualizar prioridades</button>
         </div>
+        <div id="semiNovelProgress" class="panel-help" aria-live="polite"></div>
         <div id="questionStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando questões…</div></div>
         <div class="navigator" aria-label="Navegar entre links">
           <button type="button" id="questionPrevious" class="button outline">← Anterior</button>
@@ -110,9 +111,9 @@
       <fieldset class="question-block"><legend>4. Evidências adicionais (marque somente se for verdade)</legend>
         <div class="checkbox-stack">
           <label class="checkbox-row"><input type="checkbox" name="explained_without_consulting"> Consegui explicar o assunto e suas diferenças sem consultar o material.</label>
-          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto em questões inéditas e variadas.</label>
+          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto sem consultar em questões variadas (não precisam ser inéditas).</label>
         </div>
-        <p class="panel-help">As confirmações serão salvas com a avaliação; não substituem as revisões espaçadas e os acertos exigidos.</p>
+        <p class="panel-help">As confirmações serão salvas com a avaliação; questões do caderno são semi-inéditas (já erradas no site). Nenhuma taxa aqui prevê seu resultado na prova.</p>
       </fieldset>
       <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
       <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>

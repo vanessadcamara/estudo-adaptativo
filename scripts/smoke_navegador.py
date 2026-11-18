@@ -35,7 +35,7 @@ with TestClient(app) as client:
   page.on('console',lambda m:errors.append('console '+m.text) if m.type=='error' else None)
   page.expose_function('bridge',bridge)
   html=(root/'app/static/index.html').read_text()
-  html=html.replace('<link rel="stylesheet" href="/static/style.css?v=7">','').replace('<script src="/static/app.js?v=7" defer></script>','')
+  html=html.replace('<link rel="stylesheet" href="/static/style.css?v=8">','').replace('<script src="/static/app.js?v=8" defer></script>','')
   page.set_content(html,wait_until='domcontentloaded')
   page.add_style_tag(content=(root/'app/static/style.css').read_text())
   page.evaluate('''window.fetch=async (path,init={})=>{const result=await window.bridge({url:path,method:init.method||'GET',body:init.body||null});return new Response(result.body,{status:result.status,headers:{'Content-Type':'application/json'}});}''')

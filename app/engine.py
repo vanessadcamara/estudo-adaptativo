@@ -142,6 +142,86 @@ def risk_level(risk: float | None) -> str:
     return 'alto' if risk >= 65 else 'moderado' if risk >= 35 else 'baixo'
 
 
+
+def empirical_risk_adjustment(histories: list[list[Any]], interval_fn, risk_fn,
+                              unsuccessful, now: datetime) -> tuple[float, int]:
+    """Correção retrospectiva conservadora, APENAS por matéria e por tipo.
+
+    Compara o risco pré-revisão com o resultado da revisão seguinte. Não é
+    calibração probabilística formal: amostras são pequenas e selecionadas.
+    Não modifica o banco de dados, nunca cruza matérias ou Cards/Questões.
+    """
+    deltas: list[float] = []
+    for events in histories:
+        for index in range(1, len(events)):
+            prior = events[:index]
+            at = aware(events[index].created_at)
+            if at <= aware(prior[-1].created_at) or at > now:
+                continue
+            days = elapsed_days(prior[-1].created_at, at)
+            forecast = risk_fn(prior, days, interval_fn(prior))
+            if forecast is not None:
+                deltas.append((1.0 if unsuccessful(events[index]) else 0.0) - forecast / 100.0)
+    samples = len(deltas)
+    if samples < 6:
+        return 0.0, samples
+    # Até 12 pontos percentuais, exigindo muitas observações para ganhar peso.
+    correction = (sum(deltas) / samples) * min(0.5, samples / (samples + 20))
+    return max(-0.12, min(0.12, correction)), samples
+
+
+def adjusted_risk(raw_risk: float | None, correction: float) -> float | None:
+    return None if raw_risk is None else round(max(0.0, min(100.0, raw_risk + 100 * correction)), 1)
+
+
+def ranking_score(priority: float, risk: float | None) -> tuple[float, float]:
+    """Fórmula-base intacta; risco adiciona no máximo 8 pontos à ordenação."""
+    bonus = round(0.08 * risk, 2) if risk is not None else 0.0
+    return round(min(100.0, priority + bonus), 2), bonus
+
+
+def semi_novel_progress(questions: list[Question], attempts_by_question: dict[int, list[QuestionAttempt]],
+                        now: datetime) -> dict[str, Any]:
+    """Retenção na amostra que JÁ foi errada no site externo.
+
+    Só conta a ÚLTIMA reavaliação elegível por link distinto, separada da
+    tentativa anterior por ao menos sete dias. Primeiro erro externo NÃO é
+    uma tentativa do app, e itens ainda não reavaliados não viram fracassos.
+    """
+    verified: list[tuple[int, datetime, bool]] = []
+    first_pass = 0
+    for question in questions:
+        events = [a for a in attempts_by_question[question.id] if aware(a.created_at) <= now]
+        if events:
+            first_pass += 1
+        last_spaced = None
+        for i in range(1, len(events)):
+            gap = elapsed_days(events[i-1].created_at, aware(events[i].created_at)) or 0.0
+            if gap >= 7:
+                last_spaced = events[i]
+        if last_spaced is not None:
+            verified.append((question.id, aware(last_spaced.created_at),
+                             bool(last_spaced.is_correct and last_spaced.confidence == 3)))
+    count = len(verified)
+    secure = sum(ok for _, _, ok in verified)
+    recent = [(at, ok) for _, at, ok in verified if (now-at).days < 30]
+    previous = [(at, ok) for _, at, ok in verified if 30 <= (now-at).days < 60]
+    recent_rate = 100*sum(ok for _,ok in recent)/len(recent) if recent else None
+    previous_rate = 100*sum(ok for _,ok in previous)/len(previous) if previous else None
+    trend = round(recent_rate-previous_rate,1) if len(recent)>=5 and len(previous)>=5 else None
+    return {
+        'registered': len(questions), 'reviewed_in_app': first_pass,
+        'spaced_distinct': count, 'spaced_secure': secure,
+        'spaced_secure_percent': round(100*secure/count,1) if count else None,
+        'recent_30d_count': len(recent),
+        'recent_30d_percent': round(recent_rate,1) if recent_rate is not None else None,
+        'previous_30d_count': len(previous),
+        'previous_30d_percent': round(previous_rate,1) if previous_rate is not None else None,
+        'trend_pp': trend, 'target_percent': 90,
+        'sufficient_sample': count >= 10,
+        'interpretation': 'Amostra enviesada: somente questões erradas previamente no site; não estima nota da prova.',
+    }
+
 def pending_topic_gap(records: list[TopicReview]) -> bool:
     """Uma lacuna crítica só é resolvida por nova explicação segura sem lacunas."""
     pending = False
@@ -277,6 +357,24 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     for content in new_content:
         latest_study[content.topic_id] = content.created_at
 
+    # Calibração experimental sempre restrita à própria matéria. Nunca usa
+    # históricos de Português para alterar prioridades de Matemática.
+    topic_subject_histories: dict[int, list[list[TopicReview]]] = defaultdict(list)
+    question_subject_histories: dict[int, list[list[QuestionAttempt]]] = defaultdict(list)
+    for topic in topics:
+        topic_subject_histories[topic.subject_id].append(by_topic[topic.id])
+    for q in active_questions:
+        scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
+        question_subject_histories[scope_id].append(by_question[q.id])
+    topic_adjustments = {scope: empirical_risk_adjustment(
+        rows, topic_interval, topic_forgetting_risk,
+        lambda r: r.grade <= 2 or bool(getattr(r, 'critical_gap', False)), now)
+        for scope, rows in topic_subject_histories.items()}
+    question_adjustments = {scope: empirical_risk_adjustment(
+        rows, question_interval, question_forgetting_risk,
+        lambda r: not r.is_correct or r.confidence != 3, now)
+        for scope, rows in question_subject_histories.items()}
+
     topic_queue = []
     for topic in topics:
         history = by_topic[topic.id]
@@ -290,11 +388,13 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
         interval = topic_interval(history) if mastered else min(30, topic_interval(history))
         overdue_days = max(0.0, days - interval) if days is not None else 0.0
-        risk = topic_forgetting_risk(history, days, interval)
+        correction, calibration_samples = topic_adjustments.get(topic.subject_id, (0.0, 0))
+        risk = adjusted_risk(topic_forgetting_risk(history, days, interval), correction)
         maintenance_required = days is not None and days >= interval
         components = topic_priority_components(topic, history, days, interval)
         priority = round(0.35 * components['D'] + 0.30 * components['T'] +
                          0.25 * components['E'] + 0.10 * components['I'], 2)
+        recommended_priority, risk_bonus = ranking_score(priority, risk)
         state = topic_state(history, evidence)
         if not history and reference is None:
             reason = 'Assunto novo — primeira avaliação disponível'
@@ -317,6 +417,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'interval_days': interval, 'due': maintenance_required,
             'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
+            'risk_calibration_samples': calibration_samples,
+            'risk_calibration_adjustment_pp': round(100 * correction, 2),
+            'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
             'mastered': mastered, 'learning_state': state, 'mastery_evidence': evidence,
             'priority': priority, 'priority_components': components,
             'next_due_at': next_due, 'reason': reason,
@@ -331,7 +434,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         last = history[-1] if history else None
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
-        risk = question_forgetting_risk(history, days, interval)
+        scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
+        correction, calibration_samples = question_adjustments.get(scope_id, (0.0, 0))
+        risk = adjusted_risk(question_forgetting_risk(history, days, interval), correction)
         ratio = days / interval if days is not None else 0.0
         maintenance_required = days is not None and days >= interval
         correct = sum(int(r.is_correct) for r in history)
@@ -347,6 +452,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                            0.29 * overdue + 0.09 * uncertainty +
                            (0.12 if repeated_errors else 0.0) + 0.07 / (1 + len(history)))
         priority = round(raw_priority * 100, 2)
+        recommended_priority, risk_bonus = ranking_score(priority, risk)
         recent = history[-4:]
         archive_suggested = (
             len(history) >= 6 and len(recent) == 4 and
@@ -377,6 +483,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'interval_days': interval, 'due': maintenance_required,
             'maintenance_required': maintenance_required,
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
+            'risk_calibration_samples': calibration_samples,
+            'risk_calibration_adjustment_pp': round(100 * correction, 2),
+            'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
             'overdue_days': round(max(0.0, days - interval), 2) if days is not None else 0.0,
             'priority': priority, 'next_due_at': next_due, 'reason': reason,
             'archive_suggested': archive_suggested,
@@ -386,22 +495,22 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
 
     # A precedência é exclusivamente LOCAL À MATÉRIA; nunca agenda ou escolhe
     # disciplinas, apenas ordena os itens da matéria já escolhida.
-    # Dentro de cada grupo: maior atraso absoluto, depois prioridade P.
+    # Dentro do grupo vencido/não vencido: prioridade-base + bônus de risco
+    # (máximo 8 pontos). Atraso é desempate; nunca escolhe matéria.
     topic_queue.sort(key=lambda x: (not x['maintenance_required'],
-                                    -x['overdue_days'] if x['maintenance_required'] else 0,
-                                    -x['priority'], x['attempts'], x['id']))
+                                    -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
     question_queue.sort(key=lambda x: (not x['maintenance_required'],
-                                       -x['overdue_days'] if x['maintenance_required'] else 0,
-                                       -x['priority'], x['attempts'], x['id']))
+                                       -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
     visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
     visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
     return {
         'topics': visible_topics, 'questions': visible_questions, 'subject_id': subject_id,
+        'semi_novel_progress': semi_novel_progress(active_questions, by_question, now),
         'topic_minutes': topic_minutes, 'question_minutes': question_minutes,
         'total_topics': len(topics), 'total_questions': len(active_questions),
         'archived_questions': len(questions) - len(active_questions),
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'P=0,35D+0,30T+0,25E+0,10I; prazo vencido tem prioridade só na matéria selecionada; risco heurístico não calibrado; sem revisão obrigatória.',
+        'note': 'P=0,35D+0,30T+0,25E+0,10I preservada; risco com ajuste empírico conservador até 8 pontos de ordenação; apenas na matéria escolhida. Questões semi-inéditas não estimam nota de prova.',
     }

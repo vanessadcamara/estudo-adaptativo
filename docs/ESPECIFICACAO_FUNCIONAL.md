@@ -1,4 +1,4 @@
-# Especificação funcional — Estudo Adaptativo BB v0.7
+# Especificação funcional — Estudo Adaptativo BB v0.8
 
 ## Princípios
 
@@ -22,7 +22,7 @@
 | Esforço de recuperação | Fácil, Moderado, Muito difícil | Sim |
 | Lacuna conceitual grave | Não / Sim | Sim |
 | Explicação sem consulta | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
-| Aplicação em questões inéditas e variadas | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
+| Aplicação em questões variadas sem consulta | Checkbox afirmativo | Não (obrigatório somente para Dominado) |
 | Anotações | Texto livre | Não |
 
 `Enviar respostas` registra o feedback e exibe o próximo assunto não avaliado desde o último refresh. `Pular` oculta somente durante essa passagem, sem reduzir peso ou registrar erro.
@@ -73,27 +73,27 @@ Não há formulário de registrar conteúdo novo. A API legada permanece para co
 - **E**: frequência de notas 0–2 ou lacuna crítica no histórico (0–100); sem histórico, E=50.
 - **I**: importância cadastrada 1–5, normalizada por `(importância−1)×25`.
 
-A fórmula não contém bônus. **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro do grupo de vencidos, maior atraso vem antes e P desempata. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
+A fórmula-base P não contém bônus; a ordenação pode receber um bônus separado e limitado de risco (até 8 pontos). **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro dos grupos vencidos e não vencidos, a pontuação de recomendação (P + bônus limitado de risco) ordena os itens, com atraso como desempate. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
 
 **Estados de aprendizagem:**
 
 - **Em aprendizagem**: sem histórico, nota 0–2 ou lacuna/erro conceitual grave pendente.
 - **Em consolidação**: recuperação razoável, mas algum requisito de domínio ainda não foi comprovado.
-- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões inéditas e variadas. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
+- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões variadas sem consulta. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
 
 **Questões:** prioridade considerando insucesso suavizado (36%), frequência histórica de erros (19%), tempo relativo ao intervalo (29%), incerteza por amostra pequena (9%), bônus de cobertura (até 7%) e reforço para erros recorrentes (12%). A confiança reduz o valor de acertos chutados. Os intervalos sugeridos chegam até 60 dias; **não há impedimento de revisitar antes**.
 
 A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com vencimento à frente apenas das demais questões da mesma matéria selecionada; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
 
-### Risco de esquecimento e evolução dos intervalos — v0.7
+### Risco de esquecimento e evolução dos intervalos — v0.8
 
 - Cada Card ou questão já avaliada apresenta `forgetting_risk_percent` (0–100) e `forgetting_risk_level` (`baixo`, `moderado`, `alto`). Sem avaliação: risco nulo (`null`), nível `sem_dados`.
 - Estimativa: `risco = 100 × [1 − (1 − b) × exp(−0,43 × d / max(1,i))]`; `d` é o número de dias desde a última avaliação; `i` é o intervalo atual em dias; `b` é o risco inicial heurístico que depende da última nota, dificuldade e lapsos (Cards) ou do último resultado, confiança e erros recentes (Caderno). O termo temporal cresce com o tempo. É um indicador de apoio, **não** uma previsão probabilística calibrada.
 - Os intervalos individuais mantêm as regras v0.6 como base e recebem ajuste conservador quando houver falhas recentes anteriores ao último sucesso. Acertos seguros repetidos progressivamente elevam intervalos das questões até 60 dias; notas baixas e lapsos críticos encurtam o intervalo de assuntos. O limite de 30 dias para não dominados permanece.
-- O risco informativo não cria novo termo na fórmula `P` de Cards nem na pontuação do Caderno. Seu uso quantitativo em prioridades, com importância e tempo disponível, fica reservado para evolução futura após avaliação/calibração.
+- O risco adiciona até 8 pontos somente à pontuação de **ordenação**, sem mudar a fórmula-base P dos Cards nem a fórmula-base do Caderno. O ajuste empírico por matéria e módulo usa revisões anteriores, com mínimo de 6 observações e correção máxima de ±12 pontos percentuais; é experimental, não probabilidade calibrada.
 - Nenhum agendamento, notificação, penalidade ou cobrança diária decorre de `next_due_at` ou `maintenance_required` (nome técnico mantido por compatibilidade).
 
-### Isolamento obrigatório das filas — v0.7
+### Isolamento obrigatório das filas — v0.8
 
 - `/api/queue?subject_id=ID` e `/api/sessions/{id}/queue?subject_id=ID` retornam somente assuntos e questões da matéria selecionada. `ID=0` isola questões legadas sem matéria.
 - O frontend mantém duas filas de estado separadas: Cards e Caderno de erros. A seleção precisa ser explícita e pode ser diferente entre as duas telas.
@@ -109,10 +109,18 @@ A pontuação é uma heurística explícita, não um modelo de aprendizado de m�
 - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
 - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
 
-## Garantias práticas de funcionamento (v0.7)
+## Garantias práticas de funcionamento (v0.8)
 
 - Nenhum cadastro fica somente no estado JavaScript. O formulário chama a API e recebe confirmação de `db.commit()`.
 - Todos os dados são recarregados do PostgreSQL ao abrir o sistema, sem depender do cache do navegador.
 - A pilha é calculada com todas as avaliações persistidas, e matérias/assuntos/links arquivados ficam fora da pilha sem eliminar relações históricas.
 - O primeiro acesso com banco vazio mostra comandos clicáveis para criar matéria, assunto e questão. Não se preenche automaticamente dados fictícios.
 - Há testes automatizados da API e um teste manual automatizado de navegação no Chromium em `scripts/smoke_navegador.py` (o script usa SQLite em memória; nunca altera o Neon real).
+
+### Evolução em questões semi-inéditas — v0.8
+
+- O cadastro do link significa **erro prévio no site externo**. A falha original não é contada como tentativa registrada no sistema, nem se assume o momento em que ocorreu.
+- Os percentuais são sobre **a amostra selecionada de questões já erradas**. Não projetam nota em simulados inéditos nem aproveitamento na prova do BB.
+- O indicador conta somente a **última tentativa elegível de cada link distinto**, separada da anterior por pelo menos sete dias, e só considera acerto seguro (`confidence=3`) como retenção. Não duplica o mesmo link no denominador.
+- A evolução recente é comparada com o período anterior apenas com pelo menos cinco links distintos elegíveis em cada período; taxa global com menos de dez links é marcada como amostra pequena. Meta de referência de 90% é informativa, não previsão da prova.
+- Todas essas medidas são locais à matéria selecionada; links sem matéria continuam isolados. A associação opcional de um assunto não gera bônus de prioridade, mas continua relevante aos critérios rigorosos de domínio da v0.6.

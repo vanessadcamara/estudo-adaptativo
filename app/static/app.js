@@ -1,4 +1,4 @@
-/* v0.7 — seleção explícita da matéria, filas isoladas e risco heurístico. */
+/* v0.8 — risco empírico conservador, filas isoladas e evolução semi-inédita. */
 'use strict';
 const state = {
   csrf: null, session: null,
@@ -147,8 +147,10 @@ function meta(entry){
     (entry.learning_state ? (STATE_LABELS[entry.learning_state]||'Em aprendizagem'):
     entry.due?'Precisa de revisão':'Em manutenção');
   const risk=entry.forgetting_risk_percent == null ? 'Risco: sem histórico' :
-    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (heurístico)`;
-  return `<div class="priority-line"><span><strong>Prioridade ${priority(entry)} · ${Number(entry.priority).toFixed(1)}/100</strong></span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
+    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (ajuste empírico, não validado)`;
+  const finalScore = entry.ranking_score ?? entry.priority;
+  const riskBump = entry.risk_priority_bonus || 0;
+  return `<div class="priority-line"><span><strong>Prioridade ${priority({...entry,priority:finalScore})} · ${Number(finalScore).toFixed(1)}/100</strong>${riskBump?` <small>(inclui +${riskBump.toFixed(1)} risco)</small>`:''}</span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
 }
 function masteryDetails(entry) {
   const c=entry.priority_components, e=entry.mastery_evidence;
@@ -159,16 +161,16 @@ function masteryDetails(entry) {
     ['varied_questions_85_percent',`Acertos ≥ 85% em questões distintas (${e.distinct_questions} questões; ${e.question_accuracy_percent??'—'}% de acertos)`],
     ['no_critical_gaps','Sem lacunas ou erros conceituais graves pendentes'],
     ['explained_without_consulting','Explicação sem consulta confirmada'],
-    ['applied_to_new_questions','Aplicação em questões inéditas e variadas confirmada']
+    ['applied_to_new_questions','Aplicação em questões variadas sem consulta confirmada']
   ];
   const breakdown=`D ${c.D.toFixed(1)} · T ${c.T.toFixed(1)} · E ${c.E.toFixed(1)} · I ${c.I.toFixed(1)}`;
   return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
     <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
     <p>Intervalo adaptativo: ${entry.interval_days} dia(s). Se vencer, o assunto sobe na fila <strong>somente desta matéria</strong>. Você escolhe quando voltar a estudá-la.</p>
-    <p>O risco é uma estimativa baseada em desempenho, confiança/esforço e tempo decorrido; não é uma probabilidade validada.</p>
+    <p>Prioridade-base ${Number(entry.priority).toFixed(1)}/100 + risco (até 8 pontos) = ${Number(entry.ranking_score??entry.priority).toFixed(1)}/100 na recomendação. O risco recebe ajuste empírico conservador quando há histórico suficiente, sem ser probabilidade validada.</p>
     <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
     <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
-    <p class="panel-help">Novidade e variedade são confirmadas por você; não são inferidas automaticamente dos links.</p>
+    <p class="panel-help">Variedade é confirmada por você; links previamente errados não são questões inéditas e não estimam sua nota na prova.</p>
   </details>`;
 }
 function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
@@ -187,6 +189,11 @@ function renderCards() {
   $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}${masteryDetails(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
 }
 function renderQuestions() {
+  const progress=state.errorsQueue.semi_novel_progress;
+  $('semiNovelProgress').textContent=!state.errorsSubject?'':!progress?'':
+    progress.spaced_secure_percent==null
+      ? `Questões semi-inéditas: ${progress.registered} cadastradas, ${progress.reviewed_in_app} reavaliadas. Acompanhamento de retenção começa após duas tentativas separadas por ≥ 7 dias.`
+      : `Retenção em questões semi-inéditas: ${progress.spaced_secure}/${progress.spaced_distinct} links distintos com acerto seguro após ≥ 7 dias (${progress.spaced_secure_percent}%). Meta de referência: ${progress.target_percent}%. ${progress.sufficient_sample?'':'Amostra ainda pequena. '}${progress.trend_pp==null?'':`Variação observada entre períodos: ${progress.trend_pp>0?'+':''}${progress.trend_pp} p.p. `}Não prevê nota na prova.`;
   const questions=visibleQuestions();
   if (state.questionIndex>=questions.length)state.questionIndex=Math.max(0,questions.length-1);
   const q=questions[state.questionIndex];

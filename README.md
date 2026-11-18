@@ -1,4 +1,8 @@
-# Estudo Adaptativo BB — versão 0.7
+# Estudo Adaptativo BB — versão 0.8
+
+**Atualização:** o risco de esquecimento agora tem influência limitada (até 8 pontos) **somente na ordenação local** de Cards e Caderno. A fórmula-base de prioridade dos Cards permanece exata. A estimativa usa ajuste retrospectivo conservador por matéria e tipo de item, sem prometer probabilidade calibrada.
+
+**Questões semi-inéditas:** só são cadastradas após um erro no site externo. O sistema não conta esse erro implícito como tentativa; acompanha a última reavaliação segura por link distinto, com lacuna de pelo menos sete dias, e separa esse indicador de previsões de desempenho na prova. Meta de 90% é referência, não projeção de nota. Vincular um link a um assunto não adiciona pontos à prioridade, embora continue influenciando o estado de domínio. Nenhum novo campo ou migração de banco foi necessário.
 
 Sistema pessoal de revisão adaptativa para **Banco do Brasil — Escriturário (Agente Comercial)**. A interface tem **três abas**: Cards, Caderno de erros e Configurações. Sem cronômetro, sem cotas diárias e sem calendário obrigatório.
 
