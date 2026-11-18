@@ -11,9 +11,10 @@
     <header class="header">
       <div><div class="eyebrow">SEU PLANO DE ESTUDOS</div><h1>Estudo Adaptativo <span>BB</span></h1>
         <p>Revisão inteligente, caderno de erros e progresso que não se perde.</p></div>
-      <div id="sessionBadge" class="pill">Nenhuma sessão aberta</div>
+      <div class="account-actions"><span id="accountName" class="pill" aria-label="Conta conectada">Minha conta</span><button id="logoutBtn" class="outline" type="button">Sair</button></div>
     </header>
     <section id="message" class="message" role="status" aria-live="polite" hidden></section>
+    <div id="sessionBadge" class="pill session-pill">Nenhuma sessão aberta</div>
     <div class="stats" id="stats"></div>
     <section class="panel agenda">
       <div><h2>Seu estudo de hoje</h2><p>Ritmo sugerido: duas horas, sem cobrança por dias de pausa.</p></div>
@@ -53,7 +54,7 @@
       </section>
     </div>
     <section class="panel"><h2>Como funciona o refresh?</h2><p>Encerra o lote atual, salva as avaliações realizadas e recalcula as prioridades. Se você ficar uma semana sem revisar, o sistema usa o tempo transcorrido quando retornar — sem registrar faltas, sem zerar progresso e sem penalizar o que não coube na sessão.</p><div id="lastSummary" class="summary"></div></section>
-    <footer>Dados armazenados no seu PostgreSQL · Configuração local · Sem credenciais no GitHub</footer>
+    <footer>Seus estudos ficam armazenados no PostgreSQL · Acesso protegido por login</footer>
   </main>
   <script src="/static/app.js" defer></script>
 </body>

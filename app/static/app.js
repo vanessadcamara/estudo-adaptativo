@@ -1,8 +1,9 @@
-const state = { session: null, subjects: [], topics: [], queue: null };
+const state = { session: null, subjects: [], topics: [], queue: null, csrf: null };
 const $ = id => document.getElementById(id);
 const escapeHtml = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api = async (path, method='GET', data) => {
-  const res = await fetch('/api' + path, {method, headers: {'Content-Type':'application/json'}, body: data===undefined?undefined:JSON.stringify(data)});
+  const res = await fetch('/api' + path, {method, credentials: 'same-origin', headers: {'Content-Type':'application/json', ...(method !== 'GET' ? {'X-CSRF-Token': state.csrf} : {})}, body: data===undefined?undefined:JSON.stringify(data)});
+  if (res.status === 401) { window.location.replace('/login'); throw new Error('Sessão expirada. Faça login novamente.'); }
   const result = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(typeof result.detail === 'string'?result.detail:JSON.stringify(result.detail || 'Falha na comunicação'));
   return result;
@@ -89,4 +90,12 @@ $('newContentForm').addEventListener('submit', e=>{e.preventDefault();safe(async
   await api(`/sessions/${state.session.id}/new-content`,'POST',{topic_id:Number($('studyTopic').value),minutes:Number($('studyMinutes').value)});
   toast('Conteúdo novo registrado. A primeira revisão ficará programada para depois.');await refreshUI();
 });});
-safe(async()=>{await loadBasics();state.session=await api('/sessions/open');await refreshUI();});
+$('logoutBtn').addEventListener('click',()=>safe(async()=>{
+  await api('/auth/logout','POST'); window.location.replace('/login');
+}));
+safe(async()=>{
+  const auth = await api('/auth/me');
+  state.csrf = auth.csrf_token;
+  $('accountName').textContent = auth.username;
+  await loadBasics(); state.session=await api('/sessions/open'); await refreshUI();
+});
