@@ -155,7 +155,8 @@ def test_api_records_explanation_novelty_and_persists_across_refresh(client):
 def test_frontend_shows_state_formula_and_evidence_fields(client):
     html=client.get('/').text
     script=client.get('/static/app.js').text
-    assert 'name="explained_without_consulting"' in html
+    assert 'name="recall_level"' in html and 'name="accuracy_level"' in html
+    assert 'name="assistance_level"' in html and 'name="gap_level"' in html
     assert 'name="applied_to_new_questions"' in html
     assert 'Entenda sua prioridade e seu progresso' in script
     assert 'Prazo de revisão alcançado nesta matéria' in script

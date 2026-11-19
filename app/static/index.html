@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8fc">
-  <title>Estudo Adaptativo BB · v0.9</title>
-  <link rel="stylesheet" href="/static/style.css?v=11">
-  <script src="/static/app.js?v=11" defer></script>
+  <title>Estudo Adaptativo BB · v0.13</title>
+  <link rel="stylesheet" href="/static/style.css?v=13">
+  <script src="/static/app.js?v=13" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -25,7 +25,7 @@
 
     <main>
       <section id="tab-performance" role="tabpanel" aria-labelledby="tab-button-performance">
-        <div class="section-heading"><div><span class="eyebrow">EVIDÊNCIAS DO SEU ESTUDO</span><h2>Desempenho</h2><p>90% de acertos é a meta individual de cada assunto. Registros de inéditas são agregados por matéria e não representam acertos por assunto.</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">EVIDÊNCIAS DO SEU ESTUDO</span><h2>Desempenho</h2><p>A meta de 90% é acompanhada em questões inéditas por matéria. O domínio de cada assunto é avaliado por evidências próprias; não atribuímos inéditas a assuntos automaticamente.</p></div></div>
         <div class="toolbar"><label class="field filter-field">Visualizar matéria<select id="performanceSubject"><option value="all">Todas as matérias</option></select></label></div>
         <h3 class="v09-heading">Questões inéditas por matéria</h3>
         <div id="performanceSubjects" class="metrics-grid" aria-live="polite"></div>
@@ -35,20 +35,20 @@
         <p class="panel-help" id="performanceDisclosure">Sem dados suficientes, os indicadores ficam sem valor. As faixas de Wilson 95% não garantem representatividade.</p>
       </section>
       <section id="tab-cards" role="tabpanel" aria-labelledby="tab-button-cards" hidden>
-        <div class="section-heading"><div><span class="eyebrow">SUA PILHA CONTÍNUA</span><h2>Cards de revisão</h2><p>Escolha uma matéria; vencimentos só priorizam seus próprios assuntos, sem obrigações diárias.</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">SUA PILHA CONTÍNUA</span><h2>Cards de revisão</h2><p>Escolha uma matéria. A fila se ajusta após cada registro; conclua a sessão somente quando quiser começar outra passagem, sem obrigação diária.</p></div></div>
         <div class="toolbar">
           <label class="field filter-field">Matéria<select id="cardsSubject" aria-label="Matéria dos cards"><option value="">Escolha uma matéria</option></select></label>
-          <button type="button" class="button outline" id="cardsRefresh">Atualizar prioridades</button>
+          <button type="button" class="button outline" id="cardsRefresh" title="Encerra a sessão atual e inicia outra, preservando o histórico">Concluir sessão e atualizar fila</button>
           <span class="refresh-info" id="cardsRefreshInfo" aria-live="polite"></span>
         </div>
         <div id="topicStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando assuntos…</div></div>
       </section>
 
       <section id="tab-errors" role="tabpanel" aria-labelledby="tab-button-errors" hidden>
-        <div class="section-heading"><div><span class="eyebrow">REVISÃO DE QUESTÕES</span><h2>Caderno de erros</h2><p>Cada matéria tem seu próprio caderno priorizado por erros, confiança e vencimentos.</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">REVISÃO DE QUESTÕES</span><h2>Caderno de erros</h2><p>Erros, confiança, espaçamento e histórico de sessões organizam cada matéria. A fila se ajusta automaticamente após cada tentativa.</p></div></div>
         <div class="toolbar">
           <label class="field filter-field">Matéria<select id="errorsSubject" aria-label="Matéria do caderno"><option value="">Escolha uma matéria</option></select></label>
-          <button type="button" class="button outline" id="errorsRefresh">Atualizar prioridades</button>
+          <button type="button" class="button outline" id="errorsRefresh" title="Encerra a sessão atual e inicia outra, preservando o histórico">Concluir sessão e atualizar fila</button>
           <span class="refresh-info" id="errorsRefreshInfo" aria-live="polite"></span>
         </div>
         <div id="semiNovelProgress" class="panel-help" aria-live="polite"></div>
@@ -62,7 +62,7 @@
 
 
       <section id="tab-novel" role="tabpanel" aria-labelledby="tab-button-novel" hidden>
-        <div class="section-heading"><div><span class="eyebrow">SEM CLASSIFICAR ASSUNTOS</span><h2>Questões Inéditas</h2><p>Registre somente a data, a matéria, o número de questões feitas e os acertos. Sem tempo e sem metas diárias.</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">SEM CLASSIFICAR ASSUNTOS</span><h2>Questões Inéditas</h2><p>Registre acertos por matéria e, opcionalmente, as condições da prática. Sem metas diárias.</p></div></div>
         <div class="settings-grid">
           <section class="panel"><div class="panel-head"><div><h3 id="novelFormTitle">Novo registro</h3><p>Resultados declarados por matéria.</p></div></div>
             <form id="novelForm" class="v09-form">
@@ -73,6 +73,10 @@
                 <label class="field">Questões feitas<input id="novelTotal" type="number" min="1" max="10000" step="1" inputmode="numeric" required></label>
                 <label class="field">Acertos<input id="novelCorrect" type="number" min="0" max="10000" step="1" inputmode="numeric" required></label>
               </div>
+              <label class="field">Condições semelhantes à prova<select id="novelExamConditions"><option value="">Não informado</option><option value="true">Sim</option><option value="false">Não</option></select></label>
+              <label class="field">Resolução sem consulta<select id="novelNoConsultation"><option value="">Não informado</option><option value="true">Sim</option><option value="false">Não</option></select></label>
+              <label class="field">Questões diferentes das já praticadas<select id="novelDistinct"><option value="">Não informado</option><option value="true">Sim</option><option value="false">Não</option></select></label>
+              <p class="panel-help">As condições ajudam a interpretar o desempenho, mas os acertos continuam registrados apenas por matéria, sem atribuição a assuntos.</p>
               <div class="v09-preview" id="novelPreview" aria-live="polite">Preencha as quantidades para calcular seu aproveitamento.</div>
               <div class="actions"><button class="button primary" id="novelSaveBtn" type="submit">Salvar registro</button><button class="button outline" id="novelCancel" type="button" hidden>Cancelar edição</button></div>
             </form>
@@ -104,7 +108,7 @@
         </div>
       </section>
     </main>
-    <footer>Estudo Adaptativo BB · v0.9 · Registros mantidos no PostgreSQL</footer>
+    <footer>Estudo Adaptativo BB · v0.13 · Histórico mantido no PostgreSQL</footer>
   </div>
 
   <dialog class="editor-dialog" id="subjectDialog" aria-labelledby="subjectDialogTitle">
@@ -136,24 +140,56 @@
 
   <dialog class="editor-dialog assessment-dialog" id="reviewDialog" aria-labelledby="reviewDialogTitle">
     <form id="topicFeedback" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">AVALIAÇÃO DE ASSUNTO</span><h2 id="reviewDialogTitle">Como foi sua revisão?</h2><p id="reviewContext"></p></div><button class="icon-button" type="button" data-close="reviewDialog" aria-label="Fechar">×</button></div>
-      <fieldset class="question-block"><legend>1. O quanto conseguiu lembrar sem consultar?</legend><div class="radio-stack">
-        <label class="radio-row"><input type="radio" name="grade" value="0" required>0 · Não lembrei</label>
-        <label class="radio-row"><input type="radio" name="grade" value="1" required>1 · Fragmentos, com muitas lacunas</label>
-        <label class="radio-row"><input type="radio" name="grade" value="2" required>2 · Parcialmente, com erros importantes</label>
-        <label class="radio-row"><input type="radio" name="grade" value="3" required>3 · Bem, com pequenas lacunas</label>
-        <label class="radio-row"><input type="radio" name="grade" value="4" required>4 · Corretamente, sem consulta</label>
+      <p class="panel-help">Responda <strong>após tentar explicar o conteúdo sem consultar</strong> e conferir o material. A nota (0–4) será inferida, não escolhida. Isso é autoavaliação, não uma prova objetiva.</p>
+      <fieldset class="question-block"><legend>1. Quanto conseguiu recuperar de memória?</legend><div class="radio-stack">
+        <label class="radio-row"><input type="radio" name="recall_level" value="0" required>Não lembrei</label>
+        <label class="radio-row"><input type="radio" name="recall_level" value="1" required>Lembrei fragmentos</label>
+        <label class="radio-row"><input type="radio" name="recall_level" value="2" required>Recuperei parcialmente</label>
+        <label class="radio-row"><input type="radio" name="recall_level" value="3" required>Recuperei os conceitos principais</label>
       </div></fieldset>
-      <fieldset class="question-block"><legend>2. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
-      <fieldset class="question-block"><legend>3. Ficou alguma lacuna conceitual importante?</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="critical_gap" value="false" required>Não</label><label class="radio-row"><input type="radio" name="critical_gap" value="true" required>Sim</label></div></fieldset>
-      <fieldset class="question-block"><legend>4. Evidências adicionais (marque somente se for verdade)</legend>
-        <div class="checkbox-stack">
-          <label class="checkbox-row"><input type="checkbox" name="explained_without_consulting"> Consegui explicar o assunto e suas diferenças sem consultar o material.</label>
-          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto sem consultar em questões variadas (não precisam ser inéditas).</label>
-        </div>
-        <p class="panel-help">As confirmações serão salvas com a avaliação; questões do caderno são semi-inéditas (já erradas no site). Nenhuma taxa aqui prevê seu resultado na prova.</p>
+      <fieldset class="question-block"><legend>2. Ao conferir, quão correta estava sua explicação?</legend><div class="radio-stack">
+        <label class="radio-row"><input type="radio" name="accuracy_level" value="0" required>Incorreta</label>
+        <label class="radio-row"><input type="radio" name="accuracy_level" value="1" required>Erros importantes</label>
+        <label class="radio-row"><input type="radio" name="accuracy_level" value="2" required>Pequenas imprecisões</label>
+        <label class="radio-row"><input type="radio" name="accuracy_level" value="3" required>Conceitos essenciais corretos</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>3. Que ajuda precisou durante a recuperação?</legend><div class="radio-stack">
+        <label class="radio-row"><input type="radio" name="assistance_level" value="0" required>Nenhuma</label>
+        <label class="radio-row"><input type="radio" name="assistance_level" value="1" required>Hesitei, sem ajuda externa</label>
+        <label class="radio-row"><input type="radio" name="assistance_level" value="2" required>Precisei de dicas</label>
+        <label class="radio-row"><input type="radio" name="assistance_level" value="3" required>Consultei material ou resolução</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>4. Quais lacunas permaneceram?</legend><div class="radio-grid">
+        <label class="radio-row"><input type="radio" name="gap_level" value="0" required>Nenhuma</label>
+        <label class="radio-row"><input type="radio" name="gap_level" value="1" required>Pequenas</label>
+        <label class="radio-row"><input type="radio" name="gap_level" value="2" required>Moderadas</label>
+        <label class="radio-row"><input type="radio" name="gap_level" value="3" required>Graves</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>5. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
+      <fieldset class="question-block"><legend>6. Aplicação (opcional)</legend>
+        <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar em questões diferentes sem consultar o material.</label>
+        <p class="panel-help">A nota 4 exige recuperação completa, precisão, ausência de ajuda e de lacunas. Questões inéditas são registradas separadamente, por matéria.</p>
       </fieldset>
       <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
       <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="editor-dialog assessment-dialog" id="newContentDialog" aria-labelledby="newContentTitle">
+    <form id="newContentFeedback" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">ESTUDO INICIAL — NÃO É REVISÃO ESPAÇADA</span><h2 id="newContentTitle">Como foi o primeiro contato?</h2><p id="newContentContext"></p></div><button class="icon-button" type="button" data-close="newContentDialog" aria-label="Fechar">×</button></div>
+      <p class="panel-help">Registre após estudar e conferir o material. Estas respostas <strong>não contam como retenção espaçada</strong>.</p>
+      <fieldset class="question-block"><legend>1. Quanto conseguiu explicar sem consulta?</legend><div class="radio-grid">
+        <label class="radio-row"><input type="radio" name="recall_level" value="0" required>Nada</label><label class="radio-row"><input type="radio" name="recall_level" value="1" required>Fragmentos</label><label class="radio-row"><input type="radio" name="recall_level" value="2" required>Parcial</label><label class="radio-row"><input type="radio" name="recall_level" value="3" required>Conceitos principais</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>2. Qual foi a precisão ao conferir?</legend><div class="radio-grid">
+        <label class="radio-row"><input type="radio" name="accuracy_level" value="0" required>Incorreto</label><label class="radio-row"><input type="radio" name="accuracy_level" value="1" required>Erros relevantes</label><label class="radio-row"><input type="radio" name="accuracy_level" value="2" required>Pequenos erros</label><label class="radio-row"><input type="radio" name="accuracy_level" value="3" required>Correto</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>3. Existem lacunas?</legend><div class="radio-grid">
+        <label class="radio-row"><input type="radio" name="gap_level" value="0" required>Não</label><label class="radio-row"><input type="radio" name="gap_level" value="1" required>Pequenas</label><label class="radio-row"><input type="radio" name="gap_level" value="2" required>Moderadas</label><label class="radio-row"><input type="radio" name="gap_level" value="3" required>Graves</label>
+      </div></fieldset>
+      <label class="field">Minutos estudados (opcional)<input type="number" name="minutes" min="1" max="180" step="1" placeholder="Ex.: 45"></label>
+      <label class="field">Observações (opcional)<textarea name="notes" rows="2" maxlength="3000"></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="newContentDialog">Voltar</button><button type="submit" class="button primary">Registrar estudo inicial</button></div>
     </form>
   </dialog>
 

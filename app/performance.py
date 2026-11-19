@@ -4,13 +4,14 @@ NUNCA atribuir acertos agregados a assuntos. O IC Wilson descreve a incerteza
 binomial condicional da amostra informada, não sua representatividade da prova.
 """
 from collections import defaultdict
+from datetime import timezone
 from math import sqrt
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.engine import build_queue
-from app.models import NovelPractice, Question, QuestionAttempt, Subject
+from app.engine import build_queue, elapsed_days, aware
+from app.models import NovelPractice, Question, QuestionAttempt, Subject, TopicReview, Topic
 
 TARGET = 90.0
 
@@ -28,6 +29,30 @@ def wilson_interval(successes: int, total: int) -> dict | None:
             'high': round(100 * min(1, center + margin), 1)}
 
 
+def spaced_retention_audit(reviews: list[TopicReview]) -> dict:
+    """Observed spaced recall, not a validated probability or experiment.
+
+    Does not count initial study or same-session repeats; only actual delays.
+    Reports evidence quantity and strong successes by delay, with no imputed
+    outcomes for items not reviewed.
+    """
+    bins = {'1-6': [], '7-13': [], '14+': []}
+    for previous, current in zip(reviews, reviews[1:]):
+        days = elapsed_days(previous.created_at, aware(current.created_at))
+        if days is None or days < 1:
+            continue
+        key = '14+' if days >= 14 else ('7-13' if days >= 7 else '1-6')
+        bins[key].append(current)
+    return {
+        period: {
+            'samples': len(rows),
+            'strong_recall': sum(r.grade == 4 and not r.critical_gap for r in rows),
+            'strong_recall_percent': round(100 * sum(r.grade == 4 and not r.critical_gap for r in rows) / len(rows), 1) if rows else None,
+            'structured_samples': sum(r.recall_level is not None for r in rows),
+        } for period, rows in bins.items()
+    }
+
+
 def build_performance(db: Session) -> dict:
     active = db.scalars(select(Subject).where(Subject.archived_at.is_(None)).order_by(Subject.name)).all()
     active_ids = {s.id for s in active}
@@ -37,18 +62,47 @@ def build_performance(db: Session) -> dict:
         if item.subject_id in active_ids:
             grouped[item.subject_id].append(item)
 
+    # Nunca inferir retenção por assunto a partir dos resultados agregados.
+    topic_catalog = db.scalars(select(Topic).where(Topic.archived_at.is_(None))).all()
+    topic_subject = {t.id: t.subject_id for t in topic_catalog}
+    reviews_by_topic = defaultdict(list)
+    for review in db.scalars(select(TopicReview).order_by(TopicReview.created_at, TopicReview.id)).all():
+        if review.topic_id in topic_subject:
+            reviews_by_topic[review.topic_id].append(review)
+
     subject_stats = []
     for subject in active:
         rows = grouped[subject.id]
         n = sum(r.total for r in rows)
         k = sum(r.correct for r in rows)
         rate = round(100 * k / n, 1) if n else None
+        exam_like = [r for r in rows if r.exam_conditions is True and r.no_consultation is True
+                     and r.distinct_questions is True]
+        exam_n = sum(r.total for r in exam_like)
+        exam_k = sum(r.correct for r in exam_like)
+        subject_topics = [t for t in topic_catalog if t.subject_id == subject.id]
+        delayed_reviews = []
+        for t in subject_topics:
+            reviews = reviews_by_topic[t.id]
+            for a, b in zip(reviews, reviews[1:]):
+                days = elapsed_days(a.created_at, aware(b.created_at))
+                if days is not None and days >= 7:
+                    delayed_reviews.append(b)
         subject_stats.append({
             'id': subject.id, 'name': subject.name,
             'records': len(rows), 'total': n, 'correct': k,
             'accuracy_percent': rate, 'interval_95': wilson_interval(k, n),
             'observed_target_met': rate is not None and rate >= TARGET,
             'last_date': max((r.practice_date.isoformat() for r in rows), default=None),
+            'exam_like': {'records': len(exam_like), 'total': exam_n, 'correct': exam_k,
+                          'accuracy_percent': round(100 * exam_k / exam_n, 1) if exam_n else None,
+                          'interval_95': wilson_interval(exam_k, exam_n)},
+            'registered_topics': len(subject_topics),
+            'reviewed_topics': sum(bool(reviews_by_topic[t.id]) for t in subject_topics),
+            'spaced_recall_7d': {
+                'samples': len(delayed_reviews),
+                'strong_recall': sum(r.grade == 4 and not r.critical_gap for r in delayed_reviews),
+                'structured_samples': sum(r.recall_level is not None for r in delayed_reviews)},
         })
 
     # A fila já contém as evidências de domínio e o isolamento por matéria.
@@ -75,6 +129,7 @@ def build_performance(db: Session) -> dict:
             'qualified_correct': k, 'qualified_accuracy_percent': observed,
             'interval_95': wilson_interval(k, n),
             'mastery_evidence': topic['mastery_evidence'],
+            'spaced_retention': spaced_retention_audit(reviews_by_topic[topic['id']]),
             'opportunity_priority_bonus': topic.get('opportunity_priority_bonus', 0),
             'forgetting_risk_percent': topic['forgetting_risk_percent'],
         })
@@ -84,5 +139,6 @@ def build_performance(db: Session) -> dict:
         'topics': topic_stats,
         'note': ('Inéditas: apenas resultados agregados declarados por matéria, sem identificação de assuntos. '
                  'Acertos por assunto: somente links distintos vinculados ao Caderno de erros (amostra enviesada). '
+                 'Condições semelhantes à prova são autodeclaradas; retenção espaçada deriva somente de revisões realizadas, não de estudo inicial. ' 
                  'Faixas de Wilson 95% não garantem representatividade nem predizem a prova.'),
     }

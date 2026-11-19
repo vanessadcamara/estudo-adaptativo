@@ -13,6 +13,7 @@ from app.db import get_db
 from app.auth import (router as auth_router, find_session, require_login,
                       is_production, validate_auth_configuration)
 from app.engine import build_queue
+from app.assessment import inferred_grade
 from app.performance import build_performance
 from app.models import NewContentLog, Question, QuestionAttempt, NovelPractice, StudySession, Subject, Topic, TopicReview, utcnow
 from app.schemas import (NovelPracticeIn, NovelPracticeOut, NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
@@ -25,7 +26,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.9.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.13.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -109,6 +110,9 @@ def edit_novel_practice(record_id: int, payload: NovelPracticeIn, db: Session = 
     item.practice_date = payload.practice_date
     item.total = payload.total
     item.correct = payload.correct
+    item.exam_conditions = payload.exam_conditions
+    item.no_consultation = payload.no_consultation
+    item.distinct_questions = payload.distinct_questions
     item.updated_at = utcnow()
     db.commit()
     db.refresh(item)
@@ -411,18 +415,33 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
     topic = db.get(Topic, payload.topic_id)
     if topic is None or topic.archived_at is not None:
         raise HTTPException(404, "Assunto ativo não encontrado.")
+    # Estudo inicial e revisão são modalidades mutuamente exclusivas no mesmo ciclo.
+    if db.scalar(select(NewContentLog.id).where(
+        NewContentLog.session_id == session_id, NewContentLog.topic_id == payload.topic_id)) is not None:
+        raise HTTPException(409, "Este assunto já foi estudado nesta sessão. Inicie outra para revisá-lo.")
+    structured = payload.recall_level is not None
+    grade = (inferred_grade(payload.recall_level, payload.accuracy_level,
+                            payload.assistance_level, payload.gap_level)
+             if structured else payload.grade)
+    gap = payload.gap_level >= 2 if structured else payload.critical_gap
+    explained = (grade == 4 and payload.assistance_level == 0 if structured
+                 else payload.explained_without_consulting)
     entry = TopicReview(session_id=session_id, topic_id=payload.topic_id,
-                        grade=payload.grade, difficulty=payload.difficulty,
-                        critical_gap=payload.critical_gap,
-                        explained_without_consulting=payload.explained_without_consulting,
-                        applied_to_new_questions=payload.applied_to_new_questions, notes=payload.notes)
+                        grade=grade, difficulty=payload.difficulty,
+                        critical_gap=gap, explained_without_consulting=explained,
+                        recall_level=payload.recall_level,
+                        accuracy_level=payload.accuracy_level,
+                        assistance_level=payload.assistance_level,
+                        gap_level=payload.gap_level,
+                        applied_to_new_questions=payload.applied_to_new_questions,
+                        notes=payload.notes)
     db.add(entry)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Este tópico já recebeu nota nesta sessão.")
-    return {"id": entry.id, "saved": True}
+    return {"id": entry.id, "saved": True, "inferred_grade": entry.grade}
 
 
 @api.post("/sessions/{session_id}/question-attempts", status_code=status.HTTP_201_CREATED)
@@ -446,10 +465,21 @@ def record_question_attempt(session_id: int, payload: QuestionAttemptIn, db: Ses
 @api.post("/sessions/{session_id}/new-content", status_code=status.HTTP_201_CREATED)
 def record_new_content(session_id: int, payload: NewContentIn, db: Session = Depends(get_db)):
     get_open_session_or_409(db, session_id)
-    if not db.get(Topic, payload.topic_id):
-        raise HTTPException(404, "Tópico não encontrado.")
+    topic = db.get(Topic, payload.topic_id)
+    if topic is None or topic.archived_at is not None:
+        raise HTTPException(404, "Assunto ativo não encontrado.")
+    if db.scalar(select(TopicReview.id).where(
+        TopicReview.session_id == session_id, TopicReview.topic_id == payload.topic_id)) is not None:
+        raise HTTPException(409, "Este assunto já foi revisado nesta sessão. Inicie outra para estudá-lo novamente.")
+    existing = db.scalar(select(NewContentLog.id).where(
+        NewContentLog.session_id == session_id, NewContentLog.topic_id == payload.topic_id))
+    if existing is not None:
+        raise HTTPException(409, "Este assunto já teve estudo inicial registrado nesta sessão.")
     entry = NewContentLog(session_id=session_id, topic_id=payload.topic_id,
-                          minutes=payload.minutes, notes=payload.notes)
+                          minutes=payload.minutes, notes=payload.notes,
+                          recall_level=payload.recall_level,
+                          accuracy_level=payload.accuracy_level,
+                          gap_level=payload.gap_level)
     db.add(entry)
     db.commit()
     return {"id": entry.id, "saved": True}
@@ -490,7 +520,9 @@ def dashboard(db: Session = Depends(get_db)):
         "total_topics": queue["total_topics"], "total_questions": queue["total_questions"],
         "due_topics": queue["due_topics"], "due_questions": queue["due_questions"],
         "recent_sessions": [
-            {"id": s.id, "opened_at": s.opened_at.isoformat(), "summary": s.refresh_summary}
+            {"id": s.id, "opened_at": s.opened_at.isoformat(),
+             "refreshed_at": s.refreshed_at.isoformat() if s.refreshed_at else None,
+             "summary": s.refresh_summary}
             for s in last
         ],
     }

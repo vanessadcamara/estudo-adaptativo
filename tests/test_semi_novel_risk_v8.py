@@ -113,10 +113,10 @@ def test_ui_and_api_label_biased_data_and_avoid_fake_exam_projection(client):
     html = client.get('/').text
     js = client.get('/static/app.js').text
     assert 'id="semiNovelProgress"' in html
-    assert 'questões variadas (não precisam ser inéditas)' in html
+    assert 'questões diferentes sem consultar' in html
     assert 'Não prevê nota na prova' in js
     assert 'ranking_score' in js
-    assert '/static/app.js?v=11' in html
+    assert '/static/app.js?v=13' in html
     sub = client.post('/api/subjects', json={'name': 'Conhecimentos Bancários'}).json()['id']
     summary = client.get(f'/api/queue?subject_id={sub}').json()['semi_novel_progress']
     assert summary['spaced_secure_percent'] is None

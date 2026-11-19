@@ -8,6 +8,9 @@ class NovelPracticeIn(BaseModel):
     practice_date: date
     total: int = Field(ge=1, le=10000)
     correct: int = Field(ge=0, le=10000)
+    exam_conditions: bool | None = None
+    no_consultation: bool | None = None
+    distinct_questions: bool | None = None
 
     @model_validator(mode='after')
     def validate_correct(self):
@@ -96,7 +99,24 @@ class QuestionArchiveIn(ArchiveIn):
 
 class TopicReviewIn(BaseModel):
     topic_id: int
-    grade: int = Field(ge=0, le=4)
+    # Clientes anteriores continuam aceitos; o formulário v0.13 infere a nota.
+    grade: int | None = Field(default=None, ge=0, le=4)
+    recall_level: int | None = Field(default=None, ge=0, le=3)
+    accuracy_level: int | None = Field(default=None, ge=0, le=3)
+    assistance_level: int | None = Field(default=None, ge=0, le=3)
+    gap_level: int | None = Field(default=None, ge=0, le=3)
+
+    @model_validator(mode='after')
+    def validate_assessment(self):
+        fields = (self.recall_level, self.accuracy_level, self.assistance_level, self.gap_level)
+        if any(v is not None for v in fields):
+            if not all(v is not None for v in fields):
+                raise ValueError('Responda todas as quatro perguntas do questionário de revisão.')
+            if self.grade is not None:
+                raise ValueError('Nota é inferida automaticamente; não envie nota manual junto ao questionário.')
+        elif self.grade is None:
+            raise ValueError('Informe o questionário completo ou a nota do formulário anterior.')
+        return self
     difficulty: int | None = Field(default=None, ge=1, le=3)
     critical_gap: bool = False
     explained_without_consulting: bool = False
@@ -115,7 +135,17 @@ class QuestionAttemptIn(BaseModel):
 class NewContentIn(BaseModel):
     topic_id: int
     minutes: int | None = Field(default=None, ge=1, le=180)
-    notes: str | None = None
+    recall_level: int | None = Field(default=None, ge=0, le=3)
+    accuracy_level: int | None = Field(default=None, ge=0, le=3)
+    gap_level: int | None = Field(default=None, ge=0, le=3)
+    notes: str | None = Field(default=None, max_length=3000)
+
+    @model_validator(mode='after')
+    def validate_initial_assessment(self):
+        values = (self.recall_level, self.accuracy_level, self.gap_level)
+        if any(v is not None for v in values) and not all(v is not None for v in values):
+            raise ValueError('Responda as três perguntas do estudo inicial.')
+        return self
 
 
 class SessionOut(BaseModel):

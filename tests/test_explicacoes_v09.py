@@ -15,7 +15,8 @@ def test_explicacoes_sao_legiveis_e_situacionais(client):
     assert 'readableReason(topic.reason)' in script
     assert 'readableReason(q.reason)' in script
     assert 'Tente explicar sem consultar antes de avaliar' not in script
-    assert '0,35D + 0,30T' not in script
+    # Na v0.13 a fórmula está disponível sob expansão, sem alterar o algoritmo.
+    assert '0,35D + 0,30T' in script
     assert 'Ajuste pelas dificuldades observadas no assunto' in script
 
 

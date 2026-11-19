@@ -468,7 +468,11 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     topic_queue = []
     for topic in topics:
         history = by_topic[topic.id]
-        if exclude_session_id is not None and any(r.session_id == exclude_session_id for r in history):
+        if exclude_session_id is not None and (
+            any(r.session_id == exclude_session_id for r in history) or
+            any(log.session_id == exclude_session_id and log.topic_id == topic.id
+                for log in new_content)
+        ):
             continue
         last = history[-1] if history else None
         reference = last.created_at if last else latest_study.get(topic.id)
@@ -476,6 +480,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         evidence = mastery_evidence(history, question_by_topic[topic.id])
         mastered = evidence['mastered']
         # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
+        base_interval = topic_interval(history)
+        if not mastered:
+            base_interval = min(30, base_interval)
         interval = observed_retention_interval(
             history, topic_interval(history),
             lambda r: r.grade >= 3 and not bool(getattr(r, 'critical_gap', False)),
@@ -511,7 +518,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'grade': last.grade if last else None, 'difficulty': last.difficulty if last else None,
             'critical_gap': bool(last.critical_gap) if last else False,
             'attempts': len(history), 'days_since': round(days, 1) if days is not None else None,
-            'interval_days': interval, 'due': maintenance_required,
+            'interval_days': interval, 'base_interval_days': base_interval,
+            'interval_adjustment_days': interval - base_interval,
+            'due': maintenance_required,
             'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'risk_calibration_samples': calibration_samples,
@@ -533,6 +542,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         last = history[-1] if history else None
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
+        base_interval = interval
         scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
         interval = observed_retention_interval(
             history, interval, lambda r: r.is_correct and r.confidence == 3,
@@ -582,7 +592,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'last_correct': last.is_correct if last else None,
             'last_confidence': last.confidence if last else None,
             'days_since': round(days, 1) if days is not None else None,
-            'interval_days': interval, 'due': maintenance_required,
+            'interval_days': interval, 'base_interval_days': base_interval,
+            'interval_adjustment_days': interval - base_interval,
+            'due': maintenance_required,
             'maintenance_required': maintenance_required,
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'risk_calibration_samples': calibration_samples,
@@ -618,12 +630,26 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     for log in new_content:
         register_activity(log.session_id, topic_subject_lookup.get(log.topic_id), log.created_at)
 
-    recent_sessions = {
-        subject: {sid for sid, _ in sorted(times.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)[:3]}
+    ordered_sessions = {
+        subject: sorted(times.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)
         for subject, times in session_subject_times.items()
     }
+    recent_sessions = {subject: {sid for sid, _ in sessions[:3]}
+                       for subject, sessions in ordered_sessions.items()}
+    long_sessions = {subject: {sid for sid, _ in sessions[:12]}
+                     for subject, sessions in ordered_sessions.items()}
+    topic_last_reference = {
+        t.id: (by_topic[t.id][-1].created_at if by_topic[t.id]
+               else latest_study.get(t.id) or t.created_at)
+        for t in topics
+    }
+    question_last_reference = {
+        q.id: (by_question[q.id][-1].created_at if by_question[q.id] else q.created_at)
+        for q in active_questions
+    }
 
-    def diversify(queue, histories):
+
+    def diversify(queue, histories, last_references):
         """Ordenação flexível: urgência + risco + cobertura, sem bloqueio por vencimento.
 
         A penalidade é relativa à frequência nas três sessões anteriores da
@@ -643,6 +669,17 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             baseline = min(counts.values()) if counts else 0
             for item in group:
                 count = counts[item['id']]
+                scope = item['subject_id']
+                recent_12 = long_sessions.get(scope, set())
+                count_12 = len({record.session_id for record in histories[item['id']]
+                                if record.session_id in recent_12})
+                reference = aware(last_references[item['id']])
+                visits_without_review = sum(
+                    1 for sid, at in ordered_sessions.get(scope, [])
+                    if at > reference and sid not in {
+                        record.session_id for record in histories[item['id']]
+                    }
+                )
                 excess = max(0, count - baseline) if len(group) > 1 else 0
                 penalty = min(90.0, 30.0 * excess)
                 # Long-overdue material cannot be postponed indefinitely by
@@ -666,7 +703,21 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                 interval = item['interval_days']
                 early_penalty = (12.0 if days is not None and interval > 1
                                  and days < interval * 0.5 else 0.0)
+                # Duas escalas: 3 visitas evitam repetição; 12 visitas detectam
+                # assuntos negligenciados. Histórico completo mede espera real.
+                # Só antecipa itens nunca revisados ou que atingiram manutenção.
+                eligible = item['maintenance_required'] or item['attempts'] == 0
+                long_bonus = (min(18.0, 3.0 * max(0, visits_without_review - 2))
+                              if eligible and count_12 <= 1 else 0.0)
+                # Garantia condicional: depois de >=7 visitas elegíveis sem
+                # revisão, o item vai ao topo da SUA fila, em rodízio. Não
+                # obriga estudar a matéria nem impede pular voluntariamente.
+                starvation_protected = bool(eligible and visits_without_review >= 7)
                 item['recent_review_count_3_sessions'] = count
+                item['recent_review_count_12_sessions'] = count_12
+                item['visits_without_review'] = visits_without_review
+                item['long_term_fairness_bonus'] = long_bonus
+                item['starvation_protected'] = starvation_protected
                 item['diversification_penalty'] = penalty
                 item['overdue_protection_ratio'] = round(ratio, 2)
                 item['overdue_protection_strength'] = round(protection, 2)
@@ -674,12 +725,14 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                 item['due_order_bonus'] = round(due_bonus, 2)
                 item['early_review_penalty'] = early_penalty
                 item['queue_order_score'] = round(
-                    item['ranking_score'] + due_bonus - penalty - early_penalty, 2)
-        queue.sort(key=lambda x: (-x['queue_order_score'], -x['overdue_days'],
+                    item['ranking_score'] + due_bonus + long_bonus - penalty - early_penalty, 2)
+        queue.sort(key=lambda x: (-int(x['starvation_protected']),
+                                  -x['visits_without_review'] if x['starvation_protected'] else 0,
+                                  -x['queue_order_score'], -x['overdue_days'],
                                   x['attempts'], x['id']))
 
-    diversify(topic_queue, by_topic)
-    diversify(question_queue, by_question)
+    diversify(topic_queue, by_topic, topic_last_reference)
+    diversify(question_queue, by_question, question_last_reference)
     visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
     visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
     return {
@@ -691,5 +744,5 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'v0.12: proteção progressiva contra adiamento e intervalos calibrados por recuperações observadas; alternância pelas 3 últimas sessões da matéria; vencimento é preferência flexível, não barreira absoluta; sem repetição do mesmo item avaliado na sessão; P, risco, intervalos e domínio preservados. Questões inéditas agregadas não estimam nota por assunto.',
+        'note': 'v0.13: não repetição na sessão; alternância de curto prazo (3 sessões), equilíbrio de longo prazo (12 sessões), proteção de retorno após 7 visitas à matéria sem avaliação do item elegível e calibração conservadora por recuperações espaçadas. Questionário é autoavaliação; resultados de inéditas são por matéria, não por assunto.', 
     }
