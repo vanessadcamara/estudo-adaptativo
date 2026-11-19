@@ -1,4 +1,4 @@
-/* v0.9 — desempenho primeiro, inéditas por matéria e prioridade local sem coaching. */
+/* v0.11 — alternância flexível entre sessões, sem repetir itens avaliados. */
 'use strict';
 const state = {
   csrf: null, session: null,
@@ -101,7 +101,8 @@ async function loadSelectedQueue(kind) {
   const key = kind === 'cards' ? 'cardsQueue' : 'errorsQueue';
   if (!subject) {state[key]=emptyQueue(); return;}
   const subjectId = subject === 'unassigned' ? 0 : Number(subject);
-  const queue = await api(`/queue?subject_id=${subjectId}`);
+  const route = state.session ? `/sessions/${state.session.id}/queue` : "/queue";
+  const queue = await api(`${route}?subject_id=${subjectId}`);
   // Uma resposta antiga nunca substitui a fila após trocar rapidamente a matéria.
   if (state.queueRequest[kind] === request &&
       (kind === 'cards' ? state.cardsSubject : state.errorsSubject) === subject) state[key]=queue;
@@ -153,7 +154,7 @@ const dayLabel = n => `${n} ${Number(n) === 1 ? 'dia' : 'dias'}`;
 const STATE_LABELS = {em_aprendizagem:'Em aprendizagem',em_consolidacao:'Em consolidação',dominado:'Dominado'};
 
 function priority(entry) {
-  const score = Number(entry.ranking_score ?? entry.priority ?? 0);
+  const score = Number(entry.queue_order_score ?? entry.ranking_score ?? entry.priority ?? 0);
   return score >= 58 ? 'Alta' : score >= 38 ? 'Média' : 'Baixa';
 }
 function dateInfo(entry) {
@@ -169,12 +170,12 @@ function riskDescription(entry) {
   return `Esquecimento: risco ${names[entry.forgetting_risk_level] || 'estimado'} (estimativa)`;
 }
 function meta(entry) {
-  const score = entry.ranking_score ?? entry.priority;
+  const score = entry.queue_order_score ?? entry.ranking_score ?? entry.priority;
   const status = entry.maintenance_required ? 'Prazo de revisão alcançado nesta matéria' :
     entry.learning_state ? `Progresso: ${STATE_LABELS[entry.learning_state] || 'Em aprendizagem'}` :
     entry.attempts ? 'Questão em acompanhamento' : 'Questão ainda sem reavaliação';
   return `<div class="priority-line">
-    <span><strong>Prioridade ${priority(entry)} · ${displayNumber(score)} de 100</strong></span>
+    <span><strong>Ordem ${priority(entry)} · ${displayNumber(score)} pontos</strong></span>
     <span>${esc(status)}</span>
     <span>${esc(dateInfo(entry))}</span>
     <span>${esc(riskDescription(entry))}</span>
@@ -241,7 +242,7 @@ function masteryDetails(entry) {
     ['applied_to_new_questions', 'Confirmar, na revisão mais recente, que conseguiu aplicar o assunto em questões variadas, sem consulta.']
   ];
   const achieved = checks.filter(([key]) => Boolean(e[key])).length;
-  const score = entry.ranking_score ?? entry.priority;
+  const score = entry.queue_order_score ?? entry.ranking_score ?? entry.priority;
   const base = entry.priority;
   const riskBonus = Number(entry.risk_priority_bonus) || 0;
   const opportunityBonus = Number(entry.opportunity_priority_bonus) || 0;
@@ -260,7 +261,7 @@ function masteryDetails(entry) {
       </section>
       <section class="mastery-section">
         <h4>Por que este assunto aparece nesta posição?</h4>
-        <p><strong>Prioridade ${priority(entry).toLowerCase()}: ${displayNumber(score)} de 100.</strong> Essa nota serve apenas para organizar os assuntos <strong>dentro da matéria que você escolheu</strong>. Ela não é sua porcentagem de acertos nem uma previsão da nota na prova.</p>
+        <p><strong>Ordem ${priority(entry).toLowerCase()}: ${displayNumber(score)} pontos.</strong> Essa nota serve apenas para organizar os assuntos <strong>dentro da matéria que você escolheu</strong>. Ela não é sua porcentagem de acertos nem uma previsão da nota na prova.</p>
         <p>O sistema observa a dificuldade das revisões, o tempo decorrido, os esquecimentos registrados e a importância cadastrada. Também faz pequenos ajustes com base no histórico disponível.</p>
       </section>
       <section class="mastery-section">
@@ -281,7 +282,7 @@ function masteryDetails(entry) {
         <p><strong>Nota inicial:</strong> ${displayNumber(base)} de 100.</p>
         <p><strong>Ajuste por risco de esquecimento:</strong> +${displayNumber(riskBonus)} ponto(s) (máximo de 8).</p>
         <p><strong>Ajuste pelas dificuldades observadas no assunto:</strong> +${displayNumber(opportunityBonus)} ponto(s) (máximo de 6).</p>
-        <p><strong>Prioridade final:</strong> ${displayNumber(score)} de 100. O resultado nunca ultrapassa 100.</p>
+        <p><strong>Prioridade final:</strong> ${displayNumber(entry.ranking_score)} de 100 antes da alternância.</p><p><strong>Nota de prioridade antes da alternância:</strong> ${displayNumber(entry.ranking_score)} de 100.</p><p><strong>Preferência por vencimento:</strong> +${displayNumber(entry.due_order_bonus || 0)} ponto(s).</p><p><strong>Redução por repetição recente:</strong> −${displayNumber(entry.diversification_penalty || 0)} ponto(s).</p><p><strong>Redução por antecipação excessiva:</strong> −${displayNumber(entry.early_review_penalty || 0)} ponto(s).</p><p><strong>Pontuação de ordenação:</strong> ${displayNumber(score)}. Ela pode ser negativa: é apenas uma medida relativa para ordenar a fila.</p>
         <p>O indicador de esquecimento é uma estimativa aproximada baseada no histórico, não uma probabilidade comprovada de esquecer.</p>
       </details>
     </div>

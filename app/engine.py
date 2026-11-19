@@ -1,8 +1,8 @@
 """Revisão adaptativa com filas independentes por matéria e prazos indicativos.
 
 Fórmula exclusiva dos Cards: P = 0,35D + 0,30T + 0,25E + 0,10I,
-com D, T, E e I sempre entre 0 e 100. A manutenção vencida só tem
-precedência DENTRO da matéria selecionada. Não é obrigação de estudo.
+com D, T, E e I sempre entre 0 e 100. A manutenção vencida recebe preferência flexível dentro da matéria.
+Não é obrigação diária e não impede alternância entre sessões.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -575,9 +575,16 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     }
 
     def diversify(queue, histories):
+        """Ordenação flexível: urgência + risco + cobertura, sem bloqueio por vencimento.
+
+        A penalidade é relativa à frequência nas três sessões anteriores da
+        própria matéria. Um item ainda não vencido pode ultrapassar um vencido
+        excessivamente repetido, mas a urgência permanece como bônus explícito.
+        Nenhum desses ajustes altera a nota de domínio ou os prazos individuais.
+        """
         groups = defaultdict(list)
         for item in queue:
-            groups[(item['subject_id'], item['maintenance_required'])].append(item)
+            groups[item['subject_id']].append(item)
         for group in groups.values():
             counts = {}
             for item in group:
@@ -586,14 +593,27 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                                           if record.session_id in selected})
             baseline = min(counts.values()) if counts else 0
             for item in group:
-                excess = max(0, counts[item['id']] - baseline) if len(group) > 1 else 0
-                penalty = min(60.0, 20.0 * excess)
-                item['recent_review_count_3_sessions'] = counts[item['id']]
+                count = counts[item['id']]
+                excess = max(0, count - baseline) if len(group) > 1 else 0
+                penalty = min(90.0, 30.0 * excess)
+                # Vencimento não é uma barreira absoluta. Atrasos maiores ganham
+                # força progressiva, sem eliminar o efeito da diversificação.
+                due_bonus = (12.0 + min(8.0, item['overdue_days'] * 0.5)
+                             if item['maintenance_required'] else 0.0)
+                # Evita antecipar excessivamente a revisão de itens que já têm
+                # intervalo longo, a menos que haja uma boa razão para alternar.
+                days = item['days_since']
+                interval = item['interval_days']
+                early_penalty = (12.0 if days is not None and interval > 1
+                                 and days < interval * 0.5 else 0.0)
+                item['recent_review_count_3_sessions'] = count
                 item['diversification_penalty'] = penalty
                 item['diversification_deferred'] = excess >= 2
-                item['queue_order_score'] = round(item['ranking_score'] - penalty, 2)
-        queue.sort(key=lambda x: (not x['maintenance_required'],
-                                  x['diversification_deferred'], -x['queue_order_score'], -x['overdue_days'],
+                item['due_order_bonus'] = round(due_bonus, 2)
+                item['early_review_penalty'] = early_penalty
+                item['queue_order_score'] = round(
+                    item['ranking_score'] + due_bonus - penalty - early_penalty, 2)
+        queue.sort(key=lambda x: (-x['queue_order_score'], -x['overdue_days'],
                                   x['attempts'], x['id']))
 
     diversify(topic_queue, by_topic)
@@ -609,5 +629,5 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'Diversificação por revisões nos últimos 7 dias sem alterar P, risco, domínio ou precedência de vencidos; P=0,35D+0,30T+0,25E+0,10I preservada; risco com ajuste empírico conservador até 8 pontos de ordenação; apenas na matéria escolhida. Questões semi-inéditas não estimam nota de prova.',
+        'note': 'v0.11: alternância pelas 3 últimas sessões da matéria; vencimento é preferência flexível, não barreira absoluta; sem repetição do mesmo item avaliado na sessão; P, risco, intervalos e domínio preservados. Questões inéditas agregadas não estimam nota por assunto.',
     }

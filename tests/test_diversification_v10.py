@@ -49,4 +49,4 @@ def test_multiple_reviews_same_session_do_not_count_as_multiple_sessions(client)
         queue = build_queue(db, now=now, subject_id=subject['id'])['topics']
     first_row = next(item for item in queue if item['id'] == first['id'])
     assert first_row['recent_review_count_3_sessions'] == 3
-    assert first_row['diversification_penalty'] == 40.0
+    assert first_row['diversification_penalty'] == 60.0

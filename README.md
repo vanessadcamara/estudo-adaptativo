@@ -1,10 +1,19 @@
-# Estudo Adaptativo BB — versão 0.9
+# Estudo Adaptativo BB — versão 0.11
 
 **Sistema pessoal de revisão adaptativa para Banco do Brasil — Escriturário (Agente Comercial).** A interface oferece **cinco abas**: Desempenho, Cards, Caderno de erros, Questões Inéditas, Configurações. Sem cronômetro, sem cotas diárias e sem calendário obrigatório.
 
 A aplicação entrega o frontend pelo próprio **FastAPI** e persiste revisões, tentativas e sessões no **PostgreSQL** (local ou Neon). Login com senha Argon2, sessão protegida por cookie e controle CSRF.
 
-## v0.9 — desempenho em inéditas, por matéria, sem coaching
+## v0.11 — alternância flexível entre sessões
+
+- Dentro da sessão, o mesmo card ou a mesma questão já avaliados não voltam à fila. Duas questões diferentes do mesmo assunto continuam permitidas.
+- Entre sessões, as três sessões anteriores **da própria matéria** orientam a diversificação, mesmo quando a disciplina é estudada só uma vez por semana.
+- A manutenção vencida recebe bônus de preferência (12–20 pontos), mas não bloqueia itens não vencidos. Um item muito repetido recebe penalidade relativa (30 pontos por sessão excedente, até 90).
+- Itens revistos muito antes do prazo podem receber penalidade de 12 pontos, para não desfazer o espaçamento conquistado.
+- A fórmula de prioridade, as estimativas de risco, os critérios de domínio e os intervalos de 1–60 dias permanecem independentes da ordenação diversificada.
+- A interface mostra a pontuação real de ordenação e seus ajustes. São heurísticas para organizar a fila, não garantias de retenção nem de 90% de acertos.
+
+## Histórico: v0.9 — desempenho em inéditas, por matéria, sem coaching
 
 **Cinco abas, nesta ordem:** Desempenho; Cards; Caderno de erros; Questões Inéditas; Configurações.
 

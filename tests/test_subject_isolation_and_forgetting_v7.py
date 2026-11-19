@@ -85,10 +85,12 @@ def test_due_priority_is_only_within_selected_subject(client):
             row.created_at = NOW - timedelta(days=40 if row.topic_id == items[0] else 0)
         db.commit()
         local = build_queue(db, now=NOW, subject_id=a)
-        assert [x['id'] for x in local['topics']] == items
-        assert local['topics'][0]['maintenance_required'] is True
-        assert local['topics'][1]['maintenance_required'] is False
-        assert local['topics'][0]['priority'] < local['topics'][1]['priority']
+        assert {x['id'] for x in local['topics']} == set(items)
+        rows = {x['id']: x for x in local['topics']}
+        assert rows[items[0]]['maintenance_required'] is True
+        assert rows[items[1]]['maintenance_required'] is False
+        assert rows[items[0]]['priority'] < rows[items[1]]['priority']
+        assert rows[items[0]]['due_order_bonus'] > rows[items[1]]['due_order_bonus']
         assert [x['id'] for x in build_queue(db, now=NOW, subject_id=b)['topics']] == [b_id]
 
 
@@ -142,7 +144,7 @@ def test_ui_requires_subject_choice_for_both_piles(client):
     assert 'id="novelSubject"' in html
     assert 'state.cardsQueue' in js and 'state.errorsQueue' in js
     assert 'loadSelectedQueue(\'cards\')' in js and 'loadSelectedQueue(\'errors\')' in js
-    assert 'api(`/queue?subject_id=${subjectId}`)' in js
+    assert '`/sessions/${state.session.id}/queue`' in js and '`${route}?subject_id=${subjectId}`' in js
     assert 'function riskDescription(entry)' in js
     assert 'Esquecimento: risco' in js
     assert 'Esquecimento: ainda sem histórico' in js

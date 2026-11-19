@@ -47,7 +47,7 @@ def test_formula_35_30_25_10_is_exact_and_in_0_to_100(client):
     assert item['learning_state']=='em_aprendizagem'
 
 
-def test_overdue_easy_topic_beats_high_score_recent_hard_topic(client):
+def test_due_bonus_is_present_but_not_an_absolute_barrier(client):
     s=client.post('/api/subjects',json={'name':'Português'}).json()
     easy=client.post('/api/topics',json={'subject_id':s['id'],'title':'Ortografia','importance':1}).json()
     hard=client.post('/api/topics',json={'subject_id':s['id'],'title':'Semântica','importance':5}).json()
@@ -63,11 +63,13 @@ def test_overdue_easy_topic_beats_high_score_recent_hard_topic(client):
             else:row.created_at=now-timedelta(minutes=20)
         db.commit()
         queue=build_queue(db,now=now)['topics']
-    assert queue[0]['id']==easy['id']
-    assert queue[0]['priority'] < queue[1]['priority']
-    assert queue[0]['maintenance_required'] is True
-    assert queue[1]['maintenance_required'] is False
-    assert queue[0]['interval_days'] <= 30
+    rows={x['id']:x for x in queue}
+    assert rows[easy['id']]['priority'] < rows[hard['id']]['priority']
+    assert rows[easy['id']]['maintenance_required'] is True
+    assert rows[hard['id']]['maintenance_required'] is False
+    assert rows[easy['id']]['due_order_bonus'] >= 12
+    assert rows[hard['id']]['due_order_bonus'] == 0
+    assert rows[easy['id']]['interval_days'] <= 30
 
 
 def test_no_history_no_fabricated_missed_maintenance(client):
