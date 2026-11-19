@@ -237,3 +237,10 @@ Há testes automatizados, além do teste de navegação real em Chromium (script
 - O risco de esquecimento é estimado de forma determinística, com coeficientes iniciais de projeto; não representa chance estatística validada individualmente. Ainda não utiliza histórico suficiente para ajuste de parâmetros por usuário.
 - A importância do tópico já participa dos Cards via `I`; não há seleção automática da matéria pelo sistema nem otimização pelo tempo disponível. Essas capacidades são consideradas para versões futuras, sem comprometer a autonomia da estudante.
 - A API sem `subject_id` é mantida exclusivamente por compatibilidade com clientes v0.6 e pode agregar dados de múltiplas matérias; a interface v0.9 sempre exige seleção e usa o filtro validado no servidor.
+
+### v0.12 — proteção de retenção
+
+- Revisões com atraso significativo (pelo menos 14 dias desde a última avaliação) reduzem progressivamente a penalização de diversificação; quando o atraso alcança três vezes o intervalo previsto, a penalização pode zerar. Isso não força revisões diárias nem escolhe automaticamente a matéria.
+- Intervalos de cards e questões podem ser ajustados conservadoramente a partir de sucessos e falhas observados após intervalos reais, com mínimo de seis observações elegíveis por item ou doze na matéria. Sem dados suficientes, mantém-se o intervalo original. O ajuste é limitado a aproximadamente 25%, com teto de 60 dias e limites de domínio preservados.
+- Os critérios de não repetição dentro da sessão e as filas independentes por matéria permanecem inalterados.
+- A calibração é heurística e não garante desempenho em prova.

@@ -93,6 +93,47 @@ def question_interval(records: list[QuestionAttempt]) -> int:
     return min(60, max(1, base))
 
 
+def observed_retention_interval(records: list[Any], baseline: int, successful,
+                                subject_histories: list[list[Any]] | None = None) -> int:
+    """Conservative interval calibration from *actual elapsed* successful/failed recalls.
+
+    Requires repeated evidence, shrinks sparse topic histories toward subject
+    evidence, and limits changes to 25% of the established spacing schedule.
+    Never treats a single failure as a precise estimate of memory stability.
+    """
+    def observations(events):
+        samples = []
+        for index in range(1, len(events)):
+            previous, current = events[index - 1], events[index]
+            days = elapsed_days(previous.created_at, aware(current.created_at))
+            if days is None or days < 0.5:
+                continue
+            expected = topic_interval(events[:index]) if isinstance(previous, TopicReview) else question_interval(events[:index])
+            ratio = days / max(1, expected)
+            # A failure before/at the scheduled date signals over-long intervals;
+            # a success at/after the date signals potential headroom.
+            if not successful(current) and ratio <= 1.5:
+                samples.append(-1)
+            elif successful(current) and ratio >= 0.9:
+                samples.append(1)
+        return samples
+
+    local = observations(records)
+    if len(local) >= 6:
+        evidence = local[-20:]
+        weight = min(1.0, len(evidence) / 12)
+    else:
+        pooled = [v for history in (subject_histories or []) for v in observations(history)]
+        if len(pooled) < 12:
+            return baseline
+        evidence = pooled[-100:]
+        weight = min(0.5, len(evidence) / 60)
+    signal = sum(evidence) / len(evidence)
+    # Only an imbalance in actual outcomes warrants adjustment.
+    factor = 1 + 0.25 * signal * weight
+    return max(1, min(60, max(round(baseline * 0.75 + 0.000001), min(round(baseline * 1.25), round(baseline * factor)))))
+
+
 def forgetting_risk(days: float | None, interval: int, baseline: float) -> float | None:
     """Estimativa heurística 0–100, não é probabilidade calibrada nem um ML.
 
@@ -435,7 +476,12 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         evidence = mastery_evidence(history, question_by_topic[topic.id])
         mastered = evidence['mastered']
         # Não alonga um intervalo a 60 dias sem comprovar domínio integral.
-        interval = topic_interval(history) if mastered else min(30, topic_interval(history))
+        interval = observed_retention_interval(
+            history, topic_interval(history),
+            lambda r: r.grade >= 3 and not bool(getattr(r, 'critical_gap', False)),
+            topic_subject_histories.get(topic.subject_id))
+        if not mastered:
+            interval = min(30, interval)
         overdue_days = max(0.0, days - interval) if days is not None else 0.0
         correction, calibration_samples = topic_adjustments.get(topic.subject_id, (0.0, 0))
         risk = adjusted_risk(topic_forgetting_risk(history, days, interval), correction)
@@ -488,6 +534,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         days = elapsed_days(last.created_at, now) if last else None
         interval = question_interval(history)
         scope_id = q.subject_id or topic_subject_lookup.get(q.topic_id) or 0
+        interval = observed_retention_interval(
+            history, interval, lambda r: r.is_correct and r.confidence == 3,
+            question_subject_histories.get(scope_id))
         correction, calibration_samples = question_adjustments.get(scope_id, (0.0, 0))
         risk = adjusted_risk(question_forgetting_risk(history, days, interval), correction)
         ratio = days / interval if days is not None else 0.0
@@ -596,6 +645,17 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                 count = counts[item['id']]
                 excess = max(0, count - baseline) if len(group) > 1 else 0
                 penalty = min(90.0, 30.0 * excess)
+                # Long-overdue material cannot be postponed indefinitely by
+                # the three-session diversity penalty. Risk strengthens protection.
+                days = item['days_since']
+                interval = item['interval_days']
+                ratio = days / max(1, interval) if days is not None else 0.0
+                risk = item['forgetting_risk_percent'] or 0.0
+                protection = (max(0.0, min(1.0, (ratio - 1.5) / 1.5))
+                              if days is not None and days >= 14 else 0.0)
+                if risk >= 80 and ratio >= 1.5 and days is not None and days >= 14:
+                    protection = max(protection, 0.5)
+                penalty = round(penalty * (1 - protection), 2)
                 # Vencimento não é uma barreira absoluta. Atrasos maiores ganham
                 # força progressiva, sem eliminar o efeito da diversificação.
                 due_bonus = (12.0 + min(8.0, item['overdue_days'] * 0.5)
@@ -608,6 +668,8 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                                  and days < interval * 0.5 else 0.0)
                 item['recent_review_count_3_sessions'] = count
                 item['diversification_penalty'] = penalty
+                item['overdue_protection_ratio'] = round(ratio, 2)
+                item['overdue_protection_strength'] = round(protection, 2)
                 item['diversification_deferred'] = excess >= 2
                 item['due_order_bonus'] = round(due_bonus, 2)
                 item['early_review_penalty'] = early_penalty
@@ -629,5 +691,5 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'v0.11: alternância pelas 3 últimas sessões da matéria; vencimento é preferência flexível, não barreira absoluta; sem repetição do mesmo item avaliado na sessão; P, risco, intervalos e domínio preservados. Questões inéditas agregadas não estimam nota por assunto.',
+        'note': 'v0.12: proteção progressiva contra adiamento e intervalos calibrados por recuperações observadas; alternância pelas 3 últimas sessões da matéria; vencimento é preferência flexível, não barreira absoluta; sem repetição do mesmo item avaliado na sessão; P, risco, intervalos e domínio preservados. Questões inéditas agregadas não estimam nota por assunto.',
     }
