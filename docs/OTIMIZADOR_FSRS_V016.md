@@ -5,7 +5,7 @@ O projeto usa **Py-FSRS** `fsrs>=6.3.2,<7`. O motor de inferência é leve e rod
 ## Fluxo de produção
 
 1. O usuário avalia assuntos e questões; o backend salva avaliações no PostgreSQL e atualiza a fila, usando as regras da v0.14 e, se validados, os modelos leves da v0.15 ou os parâmetros completos da v0.16.
-2. O **GitHub Actions** agenda um trabalho semanal em `.github/workflows/optimize-fsrs.yml`, fora do Render. Esse trabalho verifica o histórico de cada matéria/tipo e não treina se o histórico for insuficiente.
+2. O **GitHub Actions** agenda um trabalho semanal em `.github/workflows/optimize-fsrs.yml`, fora do Render. Antes de otimizar, aplica as migrações pendentes ao banco configurado em `FSRS_DATABASE_URL`; faça backup antes de atualizar o código. Esse trabalho verifica o histórico de cada matéria/tipo e não treina se o histórico for insuficiente.
 3. Para cada escopo elegível, o trabalhador constrói objetos `fsrs.ReviewLog` só com eventos **anteriores** à fronteira temporal de validação, executa `fsrs.Optimizer(...).compute_optimal_parameters()` e valida os **21 parâmetros** usando `fsrs.Scheduler`.
 4. A validação compara previsão antes de cada revisão com sucesso/esquecimento real dos eventos **posteriores** à fronteira. Mede Brier, desvio entre retenção prevista e observada e comparação com a v0.14 e FSRS não ajustado.
 5. Apenas um candidato aprovado é gravado em `retention_profiles.optimizer_parameters`. O histórico completo permanece intacto, e `retention_model_runs` registra todas as tentativas. Uma falha de treino preserva o modelo anterior; depois de resultados posteriores suficientes, regressão relevante pode desativar os pesos completos.
