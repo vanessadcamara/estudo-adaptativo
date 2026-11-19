@@ -30,5 +30,7 @@ jobs:
           fi
       - name: Install optimizer outside Render
         run: python -m pip install -e '.[optimizer]'
+      - name: Apply database migrations
+        run: python -m alembic upgrade head
       - name: Optimize and safely promote models
         run: python -m app.optimize_retention --apply

@@ -1,6 +1,16 @@
+from pathlib import Path
+
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+
+
+def test_optimizer_workflow_applies_migrations_before_optimization():
+    workflow = Path('.github/workflows/optimize-fsrs.yml').read_text()
+    commands = [line.strip().removeprefix('run: ') for line in workflow.splitlines()
+                if line.strip().startswith('run: ')]
+    assert commands.index('python -m alembic upgrade head') < commands.index(
+        'python -m app.optimize_retention --apply')
 
 
 def test_retention_run_stage_migration_preserves_history(tmp_path, monkeypatch):
