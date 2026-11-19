@@ -547,14 +547,57 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
                                if archive_suggested else None),
         })
 
-    # A precedência é exclusivamente LOCAL À MATÉRIA; nunca agenda ou escolhe
-    # disciplinas, apenas ordena os itens da matéria já escolhida.
-    # Dentro do grupo vencido/não vencido: prioridade-base + bônus de risco
-    # (máximo 8 pontos). Atraso é desempate; nunca escolhe matéria.
-    topic_queue.sort(key=lambda x: (not x['maintenance_required'],
-                                    -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
-    question_queue.sort(key=lambda x: (not x['maintenance_required'],
-                                       -x['ranking_score'], -x['overdue_days'], x['attempts'], x['id']))
+    # Diversificação por sessões da própria matéria, sem janela de dias corridos.
+    # Uma sessão é contada uma vez, mesmo com várias atividades registradas.
+    # A sessão em andamento é ignorada até o próximo ciclo, quando informada.
+    session_subject_times = defaultdict(dict)
+    def register_activity(session_id, subject, created_at):
+        if subject is None or session_id == exclude_session_id:
+            return
+        times = session_subject_times[subject]
+        stamp = aware(created_at)
+        if stamp <= now and (session_id not in times or stamp > times[session_id]):
+            times[session_id] = stamp
+
+    for review in topic_reviews:
+        register_activity(review.session_id, topic_subject_lookup.get(review.topic_id), review.created_at)
+    question_lookup = {q.id: q for q in questions}
+    for attempt in attempts:
+        q = question_lookup.get(attempt.question_id)
+        if q is not None:
+            register_activity(attempt.session_id, q.subject_id or topic_subject_lookup.get(q.topic_id), attempt.created_at)
+    for log in new_content:
+        register_activity(log.session_id, topic_subject_lookup.get(log.topic_id), log.created_at)
+
+    recent_sessions = {
+        subject: {sid for sid, _ in sorted(times.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)[:3]}
+        for subject, times in session_subject_times.items()
+    }
+
+    def diversify(queue, histories):
+        groups = defaultdict(list)
+        for item in queue:
+            groups[(item['subject_id'], item['maintenance_required'])].append(item)
+        for group in groups.values():
+            counts = {}
+            for item in group:
+                selected = recent_sessions.get(item['subject_id'], set())
+                counts[item['id']] = len({record.session_id for record in histories[item['id']]
+                                          if record.session_id in selected})
+            baseline = min(counts.values()) if counts else 0
+            for item in group:
+                excess = max(0, counts[item['id']] - baseline) if len(group) > 1 else 0
+                penalty = min(60.0, 20.0 * excess)
+                item['recent_review_count_3_sessions'] = counts[item['id']]
+                item['diversification_penalty'] = penalty
+                item['diversification_deferred'] = excess >= 2
+                item['queue_order_score'] = round(item['ranking_score'] - penalty, 2)
+        queue.sort(key=lambda x: (not x['maintenance_required'],
+                                  x['diversification_deferred'], -x['queue_order_score'], -x['overdue_days'],
+                                  x['attempts'], x['id']))
+
+    diversify(topic_queue, by_topic)
+    diversify(question_queue, by_question)
     visible_topics = topic_queue if topic_minutes is None else topic_queue[:topic_minutes // 10]
     visible_questions = question_queue if question_minutes is None else question_queue[:question_minutes // 5]
     return {
@@ -566,5 +609,5 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'P=0,35D+0,30T+0,25E+0,10I preservada; risco com ajuste empírico conservador até 8 pontos de ordenação; apenas na matéria escolhida. Questões semi-inéditas não estimam nota de prova.',
+        'note': 'Diversificação por revisões nos últimos 7 dias sem alterar P, risco, domínio ou precedência de vencidos; P=0,35D+0,30T+0,25E+0,10I preservada; risco com ajuste empírico conservador até 8 pontos de ordenação; apenas na matéria escolhida. Questões semi-inéditas não estimam nota de prova.',
     }
