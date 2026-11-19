@@ -88,9 +88,13 @@ def test_question_priority_rises_when_overdue_without_removing_others(client):
     assert len(distant['questions'])==3
 
 
-def test_layout_three_main_tabs_and_two_settings_tabs(client):
+def test_layout_five_main_tabs_and_two_settings_tabs(client):
     html=client.get('/').text
-    assert html.count('data-tab=')==3
+    assert html.count('data-tab=') == 5
+    nav = html.split('<nav class="tabs"', 1)[1].split('</nav>', 1)[0]
+    ordered_tabs = ['performance', 'cards', 'errors', 'novel', 'settings']
+    positions = [nav.index(f'data-tab="{tab}"') for tab in ordered_tabs]
+    assert positions == sorted(positions)
     assert html.count('data-settings-tab=')==2
     assert 'id="subjectForm"' in html and 'id="topicForm"' in html
     assert 'id="managedQuestionsList"' in html

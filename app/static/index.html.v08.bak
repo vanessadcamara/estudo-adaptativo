@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fc">
+  <title>Estudo Adaptativo BB · Pilhas contínuas</title>
+  <link rel="stylesheet" href="/static/style.css?v=8">
+  <script src="/static/app.js?v=8" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">✦</span><div><span class="eyebrow">CADERNO DE ESTUDOS</span><h1>Estudo Adaptativo <span>BB</span></h1></div></div>
+      <div class="account-actions"><span id="accountName" class="account-badge">Estudante</span><button id="logoutBtn" class="button subtle" type="button">Sair</button></div>
+    </header>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+    <nav class="tabs" role="tablist" aria-label="Áreas do sistema">
+      <button type="button" class="tab active" role="tab" id="tab-button-cards" aria-controls="tab-cards" aria-selected="true" data-tab="cards">Cards</button>
+      <button type="button" class="tab" role="tab" id="tab-button-errors" aria-controls="tab-errors" aria-selected="false" data-tab="errors">Caderno de erros</button>
+      <button type="button" class="tab" role="tab" id="tab-button-settings" aria-controls="tab-settings" aria-selected="false" data-tab="settings">Configurações</button>
+    </nav>
+
+    <main>
+      <section id="tab-cards" role="tabpanel" aria-labelledby="tab-button-cards">
+        <div class="section-heading"><div><span class="eyebrow">SUA PILHA CONTÍNUA</span><h2>Cards de revisão</h2><p>Escolha uma matéria; vencimentos só priorizam seus próprios assuntos, sem obrigações diárias.</p></div></div>
+        <div class="toolbar">
+          <label class="field filter-field">Matéria<select id="cardsSubject" aria-label="Matéria dos cards"><option value="">Escolha uma matéria</option></select></label>
+          <button type="button" class="button outline" id="cardsRefresh">Atualizar prioridades</button>
+        </div>
+        <div id="topicStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando assuntos…</div></div>
+      </section>
+
+      <section id="tab-errors" role="tabpanel" aria-labelledby="tab-button-errors" hidden>
+        <div class="section-heading"><div><span class="eyebrow">REVISÃO DE QUESTÕES</span><h2>Caderno de erros</h2><p>Cada matéria tem seu próprio caderno priorizado por erros, confiança e vencimentos.</p></div></div>
+        <div class="toolbar">
+          <label class="field filter-field">Matéria<select id="errorsSubject" aria-label="Matéria do caderno"><option value="">Escolha uma matéria</option></select></label>
+          <button type="button" class="button outline" id="errorsRefresh">Atualizar prioridades</button>
+        </div>
+        <div id="semiNovelProgress" class="panel-help" aria-live="polite"></div>
+        <div id="questionStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando questões…</div></div>
+        <div class="navigator" aria-label="Navegar entre links">
+          <button type="button" id="questionPrevious" class="button outline">← Anterior</button>
+          <span id="questionPosition">—</span>
+          <button type="button" id="questionNext" class="button outline">Próxima →</button>
+        </div>
+      </section>
+
+      <section id="tab-settings" role="tabpanel" aria-labelledby="tab-button-settings" hidden>
+        <div class="section-heading"><div><span class="eyebrow">ORGANIZAÇÃO DO SEU ESTUDO</span><h2>Configurações</h2><p>Cadastre e gerencie seu acervo. As alterações são salvas no banco.</p></div></div>
+        <nav class="subtabs" role="tablist" aria-label="Configurações específicas">
+          <button type="button" class="subtab active" role="tab" aria-selected="true" id="settings-button-cards" aria-controls="settings-cards" data-settings-tab="cards">Cards e assuntos</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" id="settings-button-errors" aria-controls="settings-errors" data-settings-tab="errors">Caderno de erros</button>
+        </nav>
+        <div id="settings-cards" role="tabpanel" aria-labelledby="settings-button-cards">
+          <div class="settings-grid">
+            <section class="panel"><div class="panel-head"><div><h3>Matérias</h3><p>Crie, renomeie, arquive ou restaure disciplinas.</p></div><button type="button" class="button primary" id="newSubject">+ Nova matéria</button></div><div id="subjectsList" class="registered-list"></div></section>
+            <section class="panel"><div class="panel-head"><div><h3>Assuntos</h3><p>Organize tópicos e a importância de cada um.</p></div><button type="button" class="button primary" id="newTopic">+ Novo assunto</button></div><label class="field">Ver assuntos da matéria<select id="topicSubjectFilter"></select></label><div id="topicsList" class="registered-list"></div></section>
+          </div>
+          <label class="checkbox-row"><input type="checkbox" id="showArchivedCatalog"> Exibir matérias e assuntos arquivados</label>
+        </div>
+        <div id="settings-errors" role="tabpanel" aria-labelledby="settings-button-errors" hidden>
+          <div class="settings-grid">
+            <section class="panel"><div class="panel-head"><div><h3>Adicionar questão errada</h3><p>Insira o link (ou enunciado) e a matéria. Nenhuma tag obrigatória.</p></div></div><button id="newQuestion" type="button" class="button primary">+ Cadastrar questão</button><p class="panel-help">Cada link fica registrado uma única vez. Ao cadastrar, já aparece na pilha.</p></section>
+            <section class="panel"><div class="panel-head"><div><h3>Gerenciar questões</h3><p>Edite o link, arquive ou restaure sem perder as avaliações.</p></div></div><label class="field">Visualizar<select id="manageQuestionsFilter"><option value="active">Questões ativas</option><option value="archived">Questões arquivadas</option></select></label><div id="managedQuestionsList" class="registered-list"></div></section>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer>Estudo Adaptativo BB · v0.7 · Tudo o que você salvar permanece no PostgreSQL</footer>
+  </div>
+
+  <dialog class="editor-dialog" id="subjectDialog" aria-labelledby="subjectDialogTitle">
+    <form id="subjectForm" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">CONFIGURAÇÕES · CARDS</span><h2 id="subjectDialogTitle">Nova matéria</h2></div><button class="icon-button" type="button" data-close="subjectDialog" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="subjectEditId"><label class="field">Nome da matéria<input id="subjectName" maxlength="120" minlength="2" placeholder="Ex.: Conhecimentos Bancários" required></label>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="subjectDialog">Cancelar</button><button class="button primary" type="submit">Salvar matéria</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="editor-dialog" id="topicDialog" aria-labelledby="topicDialogTitle">
+    <form id="topicForm" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">CONFIGURAÇÕES · CARDS</span><h2 id="topicDialogTitle">Novo assunto</h2></div><button class="icon-button" type="button" data-close="topicDialog" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="topicEditId">
+      <label class="field">Matéria<select id="subjectSelect" required></select></label>
+      <label class="field">Nome do assunto<input id="topicTitle" minlength="2" maxlength="240" placeholder="Ex.: Sistema Financeiro Nacional" required></label>
+      <div class="two-fields"><label class="field">Código (opcional)<input id="topicCode" maxlength="30" placeholder="A1"></label><label class="field">Importância<select id="topicImportance"><option value="1">1 · Baixa</option><option value="2">2 · Menor</option><option value="3" selected>3 · Normal</option><option value="4">4 · Alta</option><option value="5">5 · Muito alta</option></select></label></div>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="topicDialog">Cancelar</button><button class="button primary" type="submit">Salvar assunto</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="editor-dialog" id="questionEditorDialog" aria-labelledby="questionEditorTitle">
+    <form id="questionForm" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">CONFIGURAÇÕES · CADERNO</span><h2 id="questionEditorTitle">Adicionar questão errada</h2></div><button class="icon-button" type="button" data-close="questionEditorDialog" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="questionEditId"><label class="field">Matéria<select id="questionSubject" required></select></label><label class="field">Link da questão<input id="questionUrl" type="url" placeholder="https://..."></label>
+      <label class="field">Enunciado (se não houver link)<textarea id="questionText" rows="4" placeholder="Cole o enunciado aqui…"></textarea></label>
+      <label class="field">Assunto relacionado (opcional)<select id="questionTopic"></select></label>
+      <p class="panel-help">Informe pelo menos o link ou o enunciado.</p>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="questionEditorDialog">Cancelar</button><button class="button primary" type="submit">Salvar questão</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="editor-dialog assessment-dialog" id="reviewDialog" aria-labelledby="reviewDialogTitle">
+    <form id="topicFeedback" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">AVALIAÇÃO DE ASSUNTO</span><h2 id="reviewDialogTitle">Como foi sua revisão?</h2><p id="reviewContext"></p></div><button class="icon-button" type="button" data-close="reviewDialog" aria-label="Fechar">×</button></div>
+      <fieldset class="question-block"><legend>1. O quanto conseguiu lembrar sem consultar?</legend><div class="radio-stack">
+        <label class="radio-row"><input type="radio" name="grade" value="0" required>0 · Não lembrei</label>
+        <label class="radio-row"><input type="radio" name="grade" value="1" required>1 · Fragmentos, com muitas lacunas</label>
+        <label class="radio-row"><input type="radio" name="grade" value="2" required>2 · Parcialmente, com erros importantes</label>
+        <label class="radio-row"><input type="radio" name="grade" value="3" required>3 · Bem, com pequenas lacunas</label>
+        <label class="radio-row"><input type="radio" name="grade" value="4" required>4 · Corretamente, sem consulta</label>
+      </div></fieldset>
+      <fieldset class="question-block"><legend>2. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
+      <fieldset class="question-block"><legend>3. Ficou alguma lacuna conceitual importante?</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="critical_gap" value="false" required>Não</label><label class="radio-row"><input type="radio" name="critical_gap" value="true" required>Sim</label></div></fieldset>
+      <fieldset class="question-block"><legend>4. Evidências adicionais (marque somente se for verdade)</legend>
+        <div class="checkbox-stack">
+          <label class="checkbox-row"><input type="checkbox" name="explained_without_consulting"> Consegui explicar o assunto e suas diferenças sem consultar o material.</label>
+          <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar o assunto sem consultar em questões variadas (não precisam ser inéditas).</label>
+        </div>
+        <p class="panel-help">As confirmações serão salvas com a avaliação; questões do caderno são semi-inéditas (já erradas no site). Nenhuma taxa aqui prevê seu resultado na prova.</p>
+      </fieldset>
+      <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="editor-dialog assessment-dialog" id="attemptDialog" aria-labelledby="attemptDialogTitle">
+    <form id="questionFeedback" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">AVALIAÇÃO DE QUESTÃO</span><h2 id="attemptDialogTitle">Como você se saiu?</h2><p id="attemptContext"></p></div><button class="icon-button" type="button" data-close="attemptDialog" aria-label="Fechar">×</button></div>
+      <fieldset class="question-block"><legend>1. Você acertou?</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="is_correct" value="false" required>Errei</label><label class="radio-row"><input type="radio" name="is_correct" value="true" required>Acertei</label></div></fieldset>
+      <fieldset class="question-block"><legend>2. Qual foi sua confiança?</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="confidence" value="1" required>Chutei</label><label class="radio-row"><input type="radio" name="confidence" value="2" required>Tive dúvidas</label><label class="radio-row"><input type="radio" name="confidence" value="3" required>Estava segura</label></div></fieldset>
+      <label class="field">3. Motivo do erro (opcional)<select name="error_type"><option value="">Não classificar</option><option value="concept">Conceito</option><option value="interpretation">Interpretação</option><option value="attention">Desatenção</option><option value="calculation">Cálculo</option><option value="other">Outro</option></select></label>
+      <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que aprendi com esta questão?"></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="attemptDialog">Voltar</button><button type="submit" class="button primary">Salvar avaliação</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -1,6 +1,25 @@
 """Validação dos dados recebidos pela API."""
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+
+
+class NovelPracticeIn(BaseModel):
+    subject_id: int
+    practice_date: date
+    total: int = Field(ge=1, le=10000)
+    correct: int = Field(ge=0, le=10000)
+
+    @model_validator(mode='after')
+    def validate_correct(self):
+        if self.correct > self.total:
+            raise ValueError('Os acertos não podem ultrapassar o total de questões.')
+        return self
+
+
+class NovelPracticeOut(NovelPracticeIn):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    archived_at: datetime | None = None
 
 
 class SubjectIn(BaseModel):

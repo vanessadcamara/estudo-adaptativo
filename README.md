@@ -1,6 +1,37 @@
-# Estudo Adaptativo BB — versão 0.8
+# Estudo Adaptativo BB — versão 0.9
 
-**Atualização:** o risco de esquecimento agora tem influência limitada (até 8 pontos) **somente na ordenação local** de Cards e Caderno. A fórmula-base de prioridade dos Cards permanece exata. A estimativa usa ajuste retrospectivo conservador por matéria e tipo de item, sem prometer probabilidade calibrada.
+
+## v0.9 — desempenho em inéditas, por matéria, sem coaching
+
+**Cinco abas, nesta ordem:** Desempenho; Cards; Caderno de erros; Questões Inéditas; Configurações.
+
+- **Questões Inéditas**: um lançamento por data, matéria, quantidade feita e acertos;
+  sem assunto, sem cadastrar cada acerto, com edição e exclusão reversível. Os
+  resultados são **autodeclarados** e não se atribuem a assuntos.
+- **Desempenho**: taxas agregadas corretamente (somatório de acertos / somatório
+  de tentativas), faixa de Wilson 95% para amostra registrada e tamanho da amostra,
+  sem presumir seleção aleatória. Assuntos usam exclusivamente dados dos Cards e
+  links vinculados ao Caderno; quando faltam dados aparece **sem evidências**.
+- **Domínio**: exige >=90% de acertos confiáveis no último resultado de cada
+  link distinto do Caderno, além das evidências espaçadas e conceituais já exigidas.
+  A amostra enviesada do Caderno **não prova 90% em inéditas por assunto**.
+- **Ganho esperado sem pesos de prova**: um bônus conservador de 0–6 pontos
+  apenas na ordenação local de Cards, baseado em erros já observados no assunto,
+  com menor efeito em amostras pequenas. A fórmula-base e a precedência local dos
+  itens vencidos permanecem intactas; vincular link sem tentativa não dá bônus.
+- **Risco**: segue com correção heurística limitada, agora exige pelo menos 12
+  observações temporais antes de qualquer ajuste. Não é probabilidade validada.
+- **Sem orientação de respostas**: não há coaching, sugestões de exercícios
+  nem correção automática dos tipos de erro; a estudante faz a interpretação.
+- Assuntos dominados continuam na fila para manutenção espaçada.
+- Sem matriz de cobertura do edital, sem seleção automática de matéria,
+  cronômetro, obrigação diária ou peso de matérias na prova.
+
+**Persistência:** migração `0007_novel_practice.py` cria somente a nova tabela
+`novel_practice` e seu índice, sem alterar as avaliações anteriores. Atualize
+com `alembic upgrade head` antes de iniciar a API. Versão `0.9.0`.
+
+**Atualização (histórico v0.8):** o risco de esquecimento agora tem influência limitada (até 8 pontos) **somente na ordenação local** de Cards e Caderno. A fórmula-base de prioridade dos Cards permanece exata. A estimativa usa ajuste retrospectivo conservador por matéria e tipo de item, sem prometer probabilidade calibrada.
 
 **Questões semi-inéditas:** só são cadastradas após um erro no site externo. O sistema não conta esse erro implícito como tentativa; acompanha a última reavaliação segura por link distinto, com lacuna de pelo menos sete dias, e separa esse indicador de previsões de desempenho na prova. Meta de 90% é referência, não projeção de nota. Vincular um link a um assunto não adiciona pontos à prioridade, embora continue influenciando o estado de domínio. Nenhum novo campo ou migração de banco foi necessário.
 
@@ -166,7 +197,7 @@ O Render Free pode suspender serviços ociosos; consulte o painel para os limite
 python -m pytest -q
 ```
 
-São **37 testes automatizados**, além do teste de navegação real em Chromium (script `scripts/smoke_navegador.py`), para autenticação, CSRF, preservação de histórico, filas completas, feedback e intervalos, arquivamento/restauração, sugestão conservadora e estrutura da interface. Os testes usam SQLite em memória; produção usa PostgreSQL. Migração **0006** é necessária para persistir as novas evidências de domínio; a gestão de matérias e assuntos permanece na migração **0005**.
+Há testes automatizados, além do teste de navegação real em Chromium (script `scripts/smoke_navegador.py`), para autenticação, CSRF, preservação de histórico, filas completas, feedback e intervalos, arquivamento/restauração, sugestão conservadora e estrutura da interface. Os testes usam SQLite em memória; produção usa PostgreSQL. Migração **0006** é necessária para persistir as novas evidências de domínio; a gestão de matérias e assuntos permanece na migração **0005**.
 
 ## Limitações deliberadas da v0.7
 

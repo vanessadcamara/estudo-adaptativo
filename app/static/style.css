@@ -18,3 +18,22 @@
 .checkbox-stack{display:grid;gap:10px;margin:6px 0 10px}
 .checkbox-row{display:flex;align-items:start;gap:10px;line-height:1.45;cursor:pointer}
 .checkbox-row input{margin-top:4px;flex-shrink:0}
+
+/* v0.9 — somente leitura dos indicadores e registro agregado, sem coaching. */
+.v09-heading{font-size:17px;letter-spacing:-.25px;margin:22px 0 12px;color:#303c58}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.v09-metric{padding:20px;border:1px solid var(--line);background:white;border-radius:14px;display:grid;gap:10px}
+.v09-metric h4{font-size:14px;margin:0;font-weight:750;overflow-wrap:anywhere}
+.v09-metric .big-number{font-size:32px;font-weight:800;letter-spacing:-1.3px;color:#30479e}
+.v09-metric .panel-help{margin-top:0}
+.v09-performance-topics{padding:12px 22px}
+.v09-performance-topics .list-item{align-items:start}
+.v09-topic-info{display:grid;gap:5px;min-width:0}
+.v09-topic-value{font-size:12px;text-align:right;color:#344360;max-width:300px;line-height:1.5}
+.v09-topic-value strong{font-size:15px;display:block}
+.v09-help{margin:0 0 14px}
+.v09-form{display:grid;gap:18px}
+.v09-preview{background:#f2f5fb;border:1px solid #e0e7f2;border-radius:9px;padding:13px;color:#52617b;font-size:13px;line-height:1.5}
+.v09-preview strong{color:#33499c}
+.v09-empty{font-size:13px;line-height:1.5;color:#748197;padding:16px 4px}
+@media(max-width:540px){.v09-performance-topics .list-item{gap:8px}.v09-topic-value{text-align:left}}

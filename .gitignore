@@ -16,3 +16,4 @@ htmlcov/
 *.egg-info/
 build/
 dist/
+\n# Backups locais da v0.8\n*.v08.bak\n

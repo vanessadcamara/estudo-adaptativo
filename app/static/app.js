@@ -1,10 +1,10 @@
-/* v0.8 — risco empírico conservador, filas isoladas e evolução semi-inédita. */
+/* v0.9 — desempenho primeiro, inéditas por matéria e prioridade local sem coaching. */
 'use strict';
 const state = {
   csrf: null, session: null,
-  subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [],
+  subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [], novelRecords: [], performance: null,
   cardsQueue: {topics: [], questions: []}, errorsQueue: {topics: [], questions: []},
-  currentTab: 'cards', settingsTab: 'cards', cardsSubject: '', errorsSubject: '',
+  currentTab: 'performance', settingsTab: 'cards', cardsSubject: '', errorsSubject: '',
   activeTopicId: null, questionIndex: 0, queueRequest: {cards: 0, errors: 0},
   skippedTopics: new Set(), reviewedTopics: new Set(), answeredQuestions: new Set(),
   reviewTopicId: null, attemptQuestionId: null,
@@ -40,7 +40,7 @@ function showDialog(id) { const dialog = $(id); if (!dialog.open) dialog.showMod
 function closeDialog(id) { const dialog = $(id); if (dialog.open) dialog.close(); }
 function goTo(tab, subtab = state.settingsTab, writeHash = true) {
   state.currentTab = tab; state.settingsTab = subtab;
-  for (const name of ['cards', 'errors', 'settings']) {
+  for (const name of ['performance', 'cards', 'errors', 'novel', 'settings']) {
     const active = name === tab;
     $(`tab-${name}`).hidden = !active;
     const button = $(`tab-button-${name}`);
@@ -53,7 +53,7 @@ function goTo(tab, subtab = state.settingsTab, writeHash = true) {
     button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
   }
   if (writeHash) {
-    const route = tab === 'settings' ? `#configuracoes/${subtab}` : tab === 'errors' ? '#caderno' : '#cards';
+    const route = tab === 'settings' ? `#configuracoes/${subtab}` : tab === 'errors' ? '#caderno' : tab === 'novel' ? '#ineditas' : tab === 'cards' ? '#cards' : '#desempenho';
     if (window.location.hash !== route) window.history.replaceState(null, '', route);
   }
 }
@@ -61,7 +61,9 @@ function parseRoute() {
   const hash = location.hash;
   if (hash.startsWith('#configuracoes')) goTo('settings', hash.endsWith('/errors') ? 'errors' : 'cards', false);
   else if (hash === '#caderno') goTo('errors', 'cards', false);
-  else goTo('cards', 'cards', false);
+   else if (hash === '#ineditas') goTo('novel', 'cards', false);
+   else if (hash === '#cards') goTo('cards', 'cards', false);
+   else goTo('performance', 'cards', false);
 }
 function selectOptions(entries, placeholder, includeEmpty = true) {
   return `${includeEmpty ? `<option value="">${esc(placeholder)}</option>` : ''}${entries.map(x=>`<option value="${x.id}">${esc(x.label)}</option>`).join('')}`;
@@ -82,6 +84,8 @@ function updateOptions() {
   updateSelect('topicSubjectFilter', '<option value="all">Todas as matérias</option>'+selectOptions(state.allSubjects.map(s=>({id:s.id,label:s.name})),'',false),'all');
   updateSelect('subjectSelect', selectOptions(active, 'Selecione a matéria'));
   updateSelect('questionSubject', selectOptions(active, 'Selecione a matéria'));
+  updateSelect('novelSubject', selectOptions(active, 'Selecione a matéria'));
+  updateSelect('performanceSubject', '<option value="all">Todas as matérias</option>'+selectOptions(active,'',false),'all');
   updateQuestionTopics();
 }
 function updateQuestionTopics(selected=null) {
@@ -104,11 +108,13 @@ async function loadSelectedQueue(kind) {
 }
 async function reloadAll({preserveQuestion=true}={}) {
   const oldQuestion = preserveQuestion ? visibleQuestions()[state.questionIndex]?.id : null;
-  const [allSubjects,allTopics,allQuestions,openSession] = await Promise.all([
+  const [allSubjects,allTopics,allQuestions,openSession,novelRecords,performance] = await Promise.all([
     api('/subjects?include_archived=true'),api('/topics?include_archived=true'),
     api('/questions?include_archived=true'),api('/sessions/open'),
+    api('/novel-practice?include_archived=true'),api('/performance'),
   ]);
   state.allSubjects=allSubjects;state.allTopics=allTopics;state.allQuestions=allQuestions;
+  state.novelRecords=novelRecords;state.performance=performance;
   state.subjects=allSubjects.filter(s=>!s.archived_at);
   state.topics=allTopics.filter(t=>!t.archived_at && state.subjects.some(s=>s.id===t.subject_id));
   state.session=openSession;
@@ -116,7 +122,7 @@ async function reloadAll({preserveQuestion=true}={}) {
     const progress=await api(`/sessions/${openSession.id}/progress`);
     state.reviewedTopics = new Set(progress.topics); state.answeredQuestions = new Set(progress.questions);
   } else {state.reviewedTopics = new Set();state.answeredQuestions = new Set();}
-  updateOptions();renderCatalog();renderManagedQuestions();
+  updateOptions();renderCatalog();renderManagedQuestions();renderNovelRecords();renderPerformance();
   await Promise.all([loadSelectedQueue('cards'),loadSelectedQueue('errors')]);
   const updatedIndex = visibleQuestions().findIndex(q=>q.id===oldQuestion);
   state.questionIndex = updatedIndex >= 0 ? updatedIndex : 0;
@@ -150,7 +156,8 @@ function meta(entry){
     `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (ajuste empírico, não validado)`;
   const finalScore = entry.ranking_score ?? entry.priority;
   const riskBump = entry.risk_priority_bonus || 0;
-  return `<div class="priority-line"><span><strong>Prioridade ${priority({...entry,priority:finalScore})} · ${Number(finalScore).toFixed(1)}/100</strong>${riskBump?` <small>(inclui +${riskBump.toFixed(1)} risco)</small>`:''}</span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
+  const opportunityBump=entry.opportunity_priority_bonus || 0;
+  return `<div class="priority-line"><span><strong>Prioridade ${priority({...entry,priority:finalScore})} · ${Number(finalScore).toFixed(1)}/100</strong>${riskBump?` <small>(+${riskBump.toFixed(1)} risco)</small>`:''}${opportunityBump?` <small>(+${opportunityBump.toFixed(1)} oportunidade observada)</small>`:''}</span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
 }
 function masteryDetails(entry) {
   const c=entry.priority_components, e=entry.mastery_evidence;
@@ -158,7 +165,7 @@ function masteryDetails(entry) {
   const checks=[
     ['three_grade_fours','3 notas 4 consecutivas'],
     ['spaced_recoveries','Intervalos crescentes, com última lacuna de ≥ 14 dias'],
-    ['varied_questions_85_percent',`Acertos ≥ 85% em questões distintas (${e.distinct_questions} questões; ${e.question_accuracy_percent??'—'}% de acertos)`],
+    ['varied_questions_90_percent',`Acertos confiáveis ≥ 90% em links distintos do caderno (${e.distinct_questions} links; ${e.question_accuracy_percent??'—'}%)`],
     ['no_critical_gaps','Sem lacunas ou erros conceituais graves pendentes'],
     ['explained_without_consulting','Explicação sem consulta confirmada'],
     ['applied_to_new_questions','Aplicação em questões variadas sem consulta confirmada']
@@ -167,7 +174,7 @@ function masteryDetails(entry) {
   return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
     <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
     <p>Intervalo adaptativo: ${entry.interval_days} dia(s). Se vencer, o assunto sobe na fila <strong>somente desta matéria</strong>. Você escolhe quando voltar a estudá-la.</p>
-    <p>Prioridade-base ${Number(entry.priority).toFixed(1)}/100 + risco (até 8 pontos) = ${Number(entry.ranking_score??entry.priority).toFixed(1)}/100 na recomendação. O risco recebe ajuste empírico conservador quando há histórico suficiente, sem ser probabilidade validada.</p>
+    <p>Prioridade-base ${Number(entry.priority).toFixed(1)}/100 + risco (até 8 pontos) + oportunidade observada (até 6 pontos) = ${Number(entry.ranking_score??entry.priority).toFixed(1)}/100 na recomendação. O risco recebe ajuste empírico conservador quando há histórico suficiente, sem ser probabilidade validada.</p>
     <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
     <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
     <p class="panel-help">Variedade é confirmada por você; links previamente errados não são questões inéditas e não estimam sua nota na prova.</p>
@@ -204,6 +211,77 @@ function renderQuestions() {
   const done=state.answeredQuestions.has(q.id);
   $('questionStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">LINK RECOMENDADO · ${state.questionIndex+1}/${questions.length}</div><h3>${esc(q.statement?q.statement.slice(0,150):'Retome esta questão')}</h3><p class="card-description">${esc(q.reason)}.</p>${q.url?`<a class="link-question" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">Abrir link da questão ↗</a>`:''}${q.statement&&q.statement.length>150?`<p class="statement">${esc(q.statement)}</p>`:''}${meta(q)}${q.archive_suggested?`<div class="suggestion"><strong>Arquivamento sugerido</strong><p>${esc(q.archive_reason||'Você demonstrou domínio consistente.')}</p></div>`:''}<div class="actions"><button type="button" class="button primary" data-action="assess-question" data-id="${q.id}" ${done?'disabled':''}>${done?'Avaliação salva':'Avaliar desempenho'}</button><button type="button" class="button outline" data-action="archive-question" data-id="${q.id}">${q.archive_suggested?'Arquivar link recomendado':'Arquivar link'}</button></div>${done?'<p class="helper">Esta questão já foi avaliada nesta passagem. O refresh permite um novo ciclo, sem apagar a tentativa.</p>':''}</article>`;
 }
+
+// v0.9 — apenas resultados observados. Nenhuma tentativa agregada é atribuída a um assunto.
+const localToday = () => {
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+const pct = n => n == null ? '—' : `${Number(n).toFixed(1).replace('.',',')}%`;
+const ciText = range => range ? `Faixa de Wilson 95%: ${pct(range.low)}–${pct(range.high)} (amostra declarada; não garante representatividade)` : 'Sem amostra para estimar incerteza';
+
+function renderPerformance(){
+  const report=state.performance||{subjects:[],topics:[]};
+  const selected=$('performanceSubject').value || 'all';
+  const subjects=report.subjects.filter(x=>selected==='all'||String(x.id)===selected);
+  const topics=report.topics.filter(x=>selected==='all'||String(x.subject_id)===selected);
+  $('performanceSubjects').innerHTML=subjects.length?subjects.map(x=>`<article class="v09-metric">
+    <h4>${esc(x.name)}</h4><div class="big-number">${pct(x.accuracy_percent)}</div>
+    <div class="helper">${x.total ? `${x.correct} acertos em ${x.total} questões inéditas declaradas · ${x.records} registro(s)` : 'Nenhuma questão inédita registrada'}</div>
+    <p class="panel-help">${esc(ciText(x.interval_95))}</p>
+    ${x.accuracy_percent != null?`<p class="panel-help">${x.observed_target_met?'Meta observada de 90% atingida na amostra':'Abaixo de 90% na amostra registrada'}</p>`:''}
+  </article>`).join(''):'<p class="v09-empty">Cadastre uma matéria em Configurações para começar.</p>';
+  $('performanceTopics').innerHTML=topics.length?topics.map(t=>`<div class="list-item">
+    <div class="v09-topic-info"><strong>${t.code?esc(t.code)+' · ':''}${esc(t.title)}</strong>
+      <small>${esc(nameOf(t.subject_id))} · ${esc(STATE_LABELS[t.learning_state]||'Em aprendizagem')}${t.mastered?' · manutenção espaçada':''}</small>
+      <small>${t.reviews} revisão(ões) de Cards · ${t.distinct_links} link(s) distintos avaliados</small>
+    </div>
+    <div class="v09-topic-value"><strong>${pct(t.qualified_accuracy_percent)}</strong>
+      <span>${t.distinct_links?`${t.qualified_correct}/${t.distinct_links} acertos sem chute; ${esc(ciText(t.interval_95))}`:'Sem evidência de questões vinculadas'}</span>
+    </div>
+  </div>`).join(''):'<p class="v09-empty">Nenhum assunto cadastrado nesta seleção.</p>';
+  $('performanceDisclosure').textContent=report.note||'Não há dados suficientes para estimar o desempenho.';
+}
+
+function updateNovelPreview(){
+  const total=Number($('novelTotal').value),correct=Number($('novelCorrect').value);
+  const filled=$('novelTotal').value!==''&&$('novelCorrect').value!=='';
+  const valid=filled&&Number.isInteger(total)&&Number.isInteger(correct)&&total>=1&&total<=10000&&correct>=0&&correct<=total;
+  $('novelPreview').innerHTML=!filled?'Preencha as quantidades para calcular seu aproveitamento.':!valid?
+    '<span>Confira as quantidades: acertos não podem superar o total e ambos precisam ser inteiros.</span>':
+    `<strong>${pct(100*correct/total)}</strong> · ${correct} acerto(s) em ${total} questão(ões) · referência 90%.`;
+}
+
+function resetNovelForm(){
+  $('novelForm').reset();$('novelEditId').value='';$('novelDate').value=localToday();
+  $('novelFormTitle').textContent='Novo registro';$('novelSaveBtn').textContent='Salvar registro';
+  $('novelCancel').hidden=true;updateNovelPreview();
+}
+
+function editNovel(id){
+  const item=state.novelRecords.find(x=>x.id===id);
+  if(!item||item.archived_at)return;
+  $('novelEditId').value=String(item.id);
+  $('novelDate').value=item.practice_date;
+  $('novelSubject').value=String(item.subject_id);
+  $('novelTotal').value=String(item.total);
+  $('novelCorrect').value=String(item.correct);
+  $('novelFormTitle').textContent='Corrigir registro';$('novelSaveBtn').textContent='Salvar correção';
+  $('novelCancel').hidden=false;updateNovelPreview();
+  goTo('novel');$('novelDate').focus();
+}
+
+function renderNovelRecords(){
+  const showArchived=$('novelShowArchived').checked;
+  const items=state.novelRecords.filter(x=>showArchived||!x.archived_at);
+  $('novelRecordsList').innerHTML=items.length?items.map(x=>`<div class="list-item"><div class="item-text">
+    <strong>${esc(x.practice_date)} · ${esc(nameOf(x.subject_id))}</strong>
+    <small>${x.correct}/${x.total} acertos · ${pct(100*x.correct/x.total)}${x.archived_at?' · Excluído':''}</small></div>
+    <div class="item-actions">${x.archived_at?`<button type="button" class="button quiet small" data-restore-novel="${x.id}">Restaurar</button>`:
+      `<button type="button" class="button quiet small" data-edit-novel="${x.id}">Editar</button><button type="button" class="button danger-outline small" data-delete-novel="${x.id}">Excluir</button>`}</div>
+  </div>`).join(''):'<p class="v09-empty">Nenhum registro nesta seleção. Registre suas questões inéditas acima.</p>';
+}
+
 function openSubject(id=null) {
   $('subjectForm').reset();const s=id==null?null:state.allSubjects.find(x=>x.id===id);
   $('subjectEditId').value=s?.id||'';$('subjectName').value=s?.name||'';
@@ -257,11 +335,29 @@ $('questionPrevious').addEventListener('click',()=>{if(state.questionIndex>0){st
 $('questionNext').addEventListener('click',()=>{if(state.questionIndex<visibleQuestions().length-1){state.questionIndex++;renderQuestions();}});
 $('cardsRefresh').addEventListener('click',()=>safe(refresh));
 $('errorsRefresh').addEventListener('click',()=>safe(refresh));
+
+$('performanceSubject').addEventListener('change',renderPerformance);
+$('novelCancel').addEventListener('click',resetNovelForm);
+$('novelShowArchived').addEventListener('change',renderNovelRecords);
+for(const id of ['novelTotal','novelCorrect'])$(id).addEventListener('input',updateNovelPreview);
+$('novelForm').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
+  const id=$('novelEditId').value;
+  const total=Number($('novelTotal').value), correct=Number($('novelCorrect').value);
+  if(!Number.isInteger(total)||total<1||total>10000||!Number.isInteger(correct)||correct<0||correct>total)
+    throw new Error('Informe quantidades inteiras e acertos entre 0 e o total.');
+  if(!$('novelSubject').value||!$('novelDate').value)throw new Error('Informe a data e a matéria.');
+  const payload={subject_id:Number($('novelSubject').value),practice_date:$('novelDate').value,total,correct};
+  await api(id?`/novel-practice/${id}`:'/novel-practice',id?'PATCH':'POST',payload);
+  await reloadAll();resetNovelForm();notice(id?'Registro de inéditas corrigido.':'Questões inéditas registradas.');
+});});
 $('logoutBtn').addEventListener('click',()=>safe(async()=>{await api('/auth/logout','POST');window.location.replace('/login');}));
 
 document.addEventListener('click',event=>{
-  const el=event.target.closest('button[data-action],button[data-edit-subject],button[data-edit-topic],button[data-edit-question],button[data-archive-subject],button[data-archive-topic],button[data-archive-question]');
+  const el=event.target.closest('button[data-action],button[data-edit-subject],button[data-edit-topic],button[data-edit-question],button[data-archive-subject],button[data-archive-topic],button[data-archive-question],button[data-edit-novel],button[data-delete-novel],button[data-restore-novel]');
   if(!el)return;
+  if(el.dataset.editNovel){editNovel(Number(el.dataset.editNovel));return;}
+  if(el.dataset.deleteNovel){safe(async()=>{if(!window.confirm('Excluir este registro de inéditas? Ele poderá ser restaurado.'))return;await api(`/novel-practice/${Number(el.dataset.deleteNovel)}`,'DELETE');await reloadAll();resetNovelForm();notice('Registro excluído; histórico preservado.');});return;}
+  if(el.dataset.restoreNovel){safe(async()=>{await api(`/novel-practice/${Number(el.dataset.restoreNovel)}/restore`,'PATCH');await reloadAll();notice('Registro restaurado.');});return;}
   if(el.dataset.editSubject){openSubject(Number(el.dataset.editSubject));return;}
   if(el.dataset.editTopic){openTopic(Number(el.dataset.editTopic));return;}
   if(el.dataset.editQuestion){openQuestion(Number(el.dataset.editQuestion));return;}
@@ -333,6 +429,7 @@ $('questionFeedback').addEventListener('submit',event=>{event.preventDefault();s
   notice('Avaliação da questão salva. Prioridades reajustadas.');
 });});
 
+resetNovelForm();
 parseRoute();
 safe(async()=>{
   const auth=await api('/auth/me');state.csrf=auth.csrf_token;$('accountName').textContent=auth.username;

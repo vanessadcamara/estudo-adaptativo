@@ -136,7 +136,10 @@ def test_legacy_unassigned_questions_are_not_mixed_with_any_subject(client):
 def test_ui_requires_subject_choice_for_both_piles(client):
     html = client.get('/').text
     js = client.get('/static/app.js').text
-    assert html.count('<option value="">Escolha uma matéria</option>') == 2
+    assert html.count('<option value="">Escolha uma matéria</option>') == 3
+    assert 'id="cardsSubject"' in html
+    assert 'id="errorsSubject"' in html
+    assert 'id="novelSubject"' in html
     assert 'state.cardsQueue' in js and 'state.errorsQueue' in js
     assert 'loadSelectedQueue(\'cards\')' in js and 'loadSelectedQueue(\'errors\')' in js
     assert 'api(`/queue?subject_id=${subjectId}`)' in js

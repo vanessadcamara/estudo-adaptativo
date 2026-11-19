@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8fc">
-  <title>Estudo Adaptativo BB · Pilhas contínuas</title>
-  <link rel="stylesheet" href="/static/style.css?v=8">
-  <script src="/static/app.js?v=8" defer></script>
+  <title>Estudo Adaptativo BB · v0.9</title>
+  <link rel="stylesheet" href="/static/style.css?v=9">
+  <script src="/static/app.js?v=9" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -16,13 +16,25 @@
     </header>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
     <nav class="tabs" role="tablist" aria-label="Áreas do sistema">
-      <button type="button" class="tab active" role="tab" id="tab-button-cards" aria-controls="tab-cards" aria-selected="true" data-tab="cards">Cards</button>
+      <button type="button" class="tab active" role="tab" id="tab-button-performance" aria-controls="tab-performance" aria-selected="true" data-tab="performance">Desempenho</button>
+      <button type="button" class="tab" role="tab" id="tab-button-cards" aria-controls="tab-cards" aria-selected="false" data-tab="cards">Cards</button>
       <button type="button" class="tab" role="tab" id="tab-button-errors" aria-controls="tab-errors" aria-selected="false" data-tab="errors">Caderno de erros</button>
+      <button type="button" class="tab" role="tab" id="tab-button-novel" aria-controls="tab-novel" aria-selected="false" data-tab="novel">Questões Inéditas</button>
       <button type="button" class="tab" role="tab" id="tab-button-settings" aria-controls="tab-settings" aria-selected="false" data-tab="settings">Configurações</button>
     </nav>
 
     <main>
-      <section id="tab-cards" role="tabpanel" aria-labelledby="tab-button-cards">
+      <section id="tab-performance" role="tabpanel" aria-labelledby="tab-button-performance">
+        <div class="section-heading"><div><span class="eyebrow">EVIDÊNCIAS DO SEU ESTUDO</span><h2>Desempenho</h2><p>90% de acertos é a meta individual de cada assunto. Registros de inéditas são agregados por matéria e não representam acertos por assunto.</p></div></div>
+        <div class="toolbar"><label class="field filter-field">Visualizar matéria<select id="performanceSubject"><option value="all">Todas as matérias</option></select></label></div>
+        <h3 class="v09-heading">Questões inéditas por matéria</h3>
+        <div id="performanceSubjects" class="metrics-grid" aria-live="polite"></div>
+        <h3 class="v09-heading">Evidências por assunto</h3>
+        <p class="panel-help v09-help">Os acertos abaixo vêm de links distintos do Caderno de erros, previamente errados no site. Não são desempenho em inéditas por assunto.</p>
+        <div id="performanceTopics" class="panel v09-performance-topics" aria-live="polite"></div>
+        <p class="panel-help" id="performanceDisclosure">Sem dados suficientes, os indicadores ficam sem valor. As faixas de Wilson 95% não garantem representatividade.</p>
+      </section>
+      <section id="tab-cards" role="tabpanel" aria-labelledby="tab-button-cards" hidden>
         <div class="section-heading"><div><span class="eyebrow">SUA PILHA CONTÍNUA</span><h2>Cards de revisão</h2><p>Escolha uma matéria; vencimentos só priorizam seus próprios assuntos, sem obrigações diárias.</p></div></div>
         <div class="toolbar">
           <label class="field filter-field">Matéria<select id="cardsSubject" aria-label="Matéria dos cards"><option value="">Escolha uma matéria</option></select></label>
@@ -46,6 +58,29 @@
         </div>
       </section>
 
+
+      <section id="tab-novel" role="tabpanel" aria-labelledby="tab-button-novel" hidden>
+        <div class="section-heading"><div><span class="eyebrow">SEM CLASSIFICAR ASSUNTOS</span><h2>Questões Inéditas</h2><p>Registre somente a data, a matéria, o número de questões feitas e os acertos. Sem tempo e sem metas diárias.</p></div></div>
+        <div class="settings-grid">
+          <section class="panel"><div class="panel-head"><div><h3 id="novelFormTitle">Novo registro</h3><p>Resultados declarados por matéria.</p></div></div>
+            <form id="novelForm" class="v09-form">
+              <input type="hidden" id="novelEditId">
+              <label class="field">Data<input id="novelDate" type="date" required></label>
+              <label class="field">Matéria<select id="novelSubject" required><option value="">Escolha uma matéria</option></select></label>
+              <div class="two-fields">
+                <label class="field">Questões feitas<input id="novelTotal" type="number" min="1" max="10000" step="1" inputmode="numeric" required></label>
+                <label class="field">Acertos<input id="novelCorrect" type="number" min="0" max="10000" step="1" inputmode="numeric" required></label>
+              </div>
+              <div class="v09-preview" id="novelPreview" aria-live="polite">Preencha as quantidades para calcular seu aproveitamento.</div>
+              <div class="actions"><button class="button primary" id="novelSaveBtn" type="submit">Salvar registro</button><button class="button outline" id="novelCancel" type="button" hidden>Cancelar edição</button></div>
+            </form>
+          </section>
+          <section class="panel"><div class="panel-head"><div><h3>Histórico de inéditas</h3><p>É possível editar ou excluir um registro sem perder as demais avaliações.</p></div></div>
+            <label class="checkbox-row"><input type="checkbox" id="novelShowArchived"> Exibir registros excluídos (restauráveis)</label>
+            <div id="novelRecordsList" class="registered-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
       <section id="tab-settings" role="tabpanel" aria-labelledby="tab-button-settings" hidden>
         <div class="section-heading"><div><span class="eyebrow">ORGANIZAÇÃO DO SEU ESTUDO</span><h2>Configurações</h2><p>Cadastre e gerencie seu acervo. As alterações são salvas no banco.</p></div></div>
         <nav class="subtabs" role="tablist" aria-label="Configurações específicas">
@@ -67,7 +102,7 @@
         </div>
       </section>
     </main>
-    <footer>Estudo Adaptativo BB · v0.7 · Tudo o que você salvar permanece no PostgreSQL</footer>
+    <footer>Estudo Adaptativo BB · v0.9 · Registros mantidos no PostgreSQL</footer>
   </div>
 
   <dialog class="editor-dialog" id="subjectDialog" aria-labelledby="subjectDialogTitle">

@@ -18,12 +18,12 @@ def review_on(days_ago, grade=4, explained=True, novel=True, critical=False, dif
 
 def seven_question_sample(concept_pending=False):
     base = datetime(2026, 11, 18, tzinfo=timezone.utc)
-    # Pelo menos 8 tentativas, 7 questões diferentes e 6/7 acertos finais (85,71%).
+    # Ao menos 8 tentativas, 10 questões diferentes e 9/10 acertos seguros.
     attempts = [QuestionAttempt(question_id=1, is_correct=False, confidence=1,
                                 error_type='concept', created_at=base - timedelta(days=24))]
-    for i in range(1, 8):
-        attempts.append(QuestionAttempt(question_id=i, is_correct=i != 7, confidence=3,
-                                        error_type='concept' if i == 7 and concept_pending else 'attention',
+    for i in range(1, 11):
+        attempts.append(QuestionAttempt(question_id=i, is_correct=i != 10, confidence=3,
+                                        error_type='concept' if i == 10 and concept_pending else 'attention',
                                         created_at=base - timedelta(days=3)))
     return attempts
 
@@ -84,8 +84,8 @@ def test_mastery_requires_all_six_independent_evidences():
     attempts=seven_question_sample()
     report=mastery_evidence(r,attempts)
     assert report['mastered'] is True
-    assert report['distinct_questions']==7
-    assert report['question_accuracy_percent']>=85
+    assert report['distinct_questions']==10
+    assert report['question_accuracy_percent']>=90
     assert topic_state(r,report)=='dominado'
     assert topic_interval(r)==60
     assert is_topic_mastered(r,attempts)
@@ -95,8 +95,8 @@ def test_mastery_requires_all_six_independent_evidences():
     # Não declarou prática em questões inéditas? Sem inferências artificiais.
     without_novel=[review_on(50),review_on(35),review_on(0,novel=False)]
     assert is_topic_mastered(without_novel,attempts) is False
-    # Apenas 7 tentativas em 7 links não bastam para o tamanho mínimo da amostra.
-    assert is_topic_mastered(r,attempts[1:]) is False
+    # Amostra reduzida não basta para declarar domínio.
+    assert is_topic_mastered(r,attempts[-4:]) is False
     # Menos de 14 dias entre as duas últimas recuperações não comprova espaçamento.
     unspaced=[review_on(18),review_on(8),review_on(0)]
     assert is_topic_mastered(unspaced,attempts) is False
@@ -106,15 +106,15 @@ def test_conceptual_error_blocks_mastery_until_confidently_resolved():
     r=[review_on(50),review_on(35),review_on(0)]
     attempts=seven_question_sample(concept_pending=True)
     ev=mastery_evidence(r,attempts)
-    assert ev['question_accuracy_percent']>=85
+    assert ev['question_accuracy_percent']>=90
     assert ev['pending_concept_errors']==1
     assert ev['no_critical_gaps'] is False
     assert ev['mastered'] is False
     assert topic_state(r,ev)=='em_aprendizagem'
-    attempts.append(QuestionAttempt(question_id=7,is_correct=True,confidence=2,
+    attempts.append(QuestionAttempt(question_id=10,is_correct=True,confidence=2,
                                     created_at=datetime(2026,11,18,tzinfo=timezone.utc)))
     assert mastery_evidence(r,attempts)['mastered'] is False
-    attempts.append(QuestionAttempt(question_id=7,is_correct=True,confidence=3,
+    attempts.append(QuestionAttempt(question_id=10,is_correct=True,confidence=3,
                                     created_at=datetime(2026,11,18,tzinfo=timezone.utc)+timedelta(seconds=1)))
     assert mastery_evidence(r,attempts)['mastered'] is True
 

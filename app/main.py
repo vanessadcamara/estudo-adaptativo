@@ -13,8 +13,9 @@ from app.db import get_db
 from app.auth import (router as auth_router, find_session, require_login,
                       is_production, validate_auth_configuration)
 from app.engine import build_queue
-from app.models import NewContentLog, Question, QuestionAttempt, StudySession, Subject, Topic, TopicReview, utcnow
-from app.schemas import (NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
+from app.performance import build_performance
+from app.models import NewContentLog, Question, QuestionAttempt, NovelPractice, StudySession, Subject, Topic, TopicReview, utcnow
+from app.schemas import (NovelPracticeIn, NovelPracticeOut, NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
                          SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn, QuestionArchiveIn, SubjectEdit, TopicEdit, QuestionEdit, ArchiveIn)
 
 @asynccontextmanager
@@ -24,7 +25,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.8.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.9.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -69,6 +70,81 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 def health(db: Session = Depends(get_db)):
     db.execute(select(func.count()).select_from(Subject)).scalar_one()
     return {"status": "ok"}
+
+
+@api.get('/novel-practice', response_model=list[NovelPracticeOut])
+def list_novel_practice(include_archived: bool = False, subject_id: int | None = None,
+                        db: Session = Depends(get_db)):
+    query = select(NovelPractice)
+    if not include_archived:
+        query = query.where(NovelPractice.archived_at.is_(None))
+    if subject_id is not None:
+        query = query.where(NovelPractice.subject_id == subject_id)
+    return db.scalars(query.order_by(NovelPractice.practice_date.desc(), NovelPractice.id.desc())).all()
+
+
+def ensure_active_novel_subject(db: Session, subject_id: int):
+    subject = db.get(Subject, subject_id)
+    if subject is None or subject.archived_at is not None:
+        raise HTTPException(404, 'Matéria ativa não encontrada.')
+
+
+@api.post('/novel-practice', response_model=NovelPracticeOut, status_code=status.HTTP_201_CREATED)
+def create_novel_practice(payload: NovelPracticeIn, db: Session = Depends(get_db)):
+    ensure_active_novel_subject(db, payload.subject_id)
+    item = NovelPractice(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@api.patch('/novel-practice/{record_id}', response_model=NovelPracticeOut)
+def edit_novel_practice(record_id: int, payload: NovelPracticeIn, db: Session = Depends(get_db)):
+    item = db.get(NovelPractice, record_id)
+    if item is None or item.archived_at is not None:
+        raise HTTPException(404, 'Registro ativo não encontrado.')
+    ensure_active_novel_subject(db, payload.subject_id)
+    item.subject_id = payload.subject_id
+    item.practice_date = payload.practice_date
+    item.total = payload.total
+    item.correct = payload.correct
+    item.updated_at = utcnow()
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@api.delete('/novel-practice/{record_id}', response_model=NovelPracticeOut)
+def archive_novel_practice(record_id: int, db: Session = Depends(get_db)):
+    item = db.get(NovelPractice, record_id)
+    if item is None:
+        raise HTTPException(404, 'Registro não encontrado.')
+    if item.archived_at is None:
+        item.archived_at = utcnow()
+        item.updated_at = utcnow()
+        db.commit()
+        db.refresh(item)
+    return item
+
+
+@api.patch('/novel-practice/{record_id}/restore', response_model=NovelPracticeOut)
+def restore_novel_practice(record_id: int, db: Session = Depends(get_db)):
+    item = db.get(NovelPractice, record_id)
+    if item is None:
+        raise HTTPException(404, 'Registro não encontrado.')
+    ensure_active_novel_subject(db, item.subject_id)
+    if item.archived_at is not None:
+        item.archived_at = None
+        item.updated_at = utcnow()
+        db.commit()
+        db.refresh(item)
+    return item
+
+
+@api.get('/performance')
+def performance(db: Session = Depends(get_db)):
+    return build_performance(db)
 
 
 @api.get("/subjects", response_model=list[SubjectOut])

@@ -1,7 +1,7 @@
 """Modelos persistentes: eventos de estudo nunca são apagados no refresh."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -18,6 +18,23 @@ class Subject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     topics: Mapped[list["Topic"]] = relationship(back_populates="subject")
+
+
+class NovelPractice(Base):
+    """Resultados inéditos por matéria; SEM assunto e sem tentativas individuais."""
+    __tablename__ = 'novel_practice'
+    __table_args__ = (
+        CheckConstraint('total >= 1 AND total <= 10000', name='ck_novel_practice_total'),
+        CheckConstraint('correct >= 0 AND correct <= total', name='ck_novel_practice_correct'),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_id: Mapped[int] = mapped_column(ForeignKey('subjects.id', ondelete='RESTRICT'), nullable=False)
+    practice_date: Mapped[date] = mapped_column(Date(), nullable=False)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    correct: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Topic(Base):

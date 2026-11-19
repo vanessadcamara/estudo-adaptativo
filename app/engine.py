@@ -163,11 +163,35 @@ def empirical_risk_adjustment(histories: list[list[Any]], interval_fn, risk_fn,
             if forecast is not None:
                 deltas.append((1.0 if unsuccessful(events[index]) else 0.0) - forecast / 100.0)
     samples = len(deltas)
-    if samples < 6:
+    if samples < 12:
         return 0.0, samples
     # Até 12 pontos percentuais, exigindo muitas observações para ganhar peso.
     correction = (sum(deltas) / samples) * min(0.5, samples / (samples + 20))
     return max(-0.12, min(0.12, correction)), samples
+
+
+def risk_calibration_audit(histories: list[list[Any]], interval_fn, risk_fn,
+                           unsuccessful, now: datetime) -> dict[str, Any]:
+    """Audita previsões feitas com o passado contra cada revisão seguinte.
+
+    Brier 0–1 só é publicado com 20 eventos; amostra selecionada e heurística.
+    Não é avaliação em amostra aleatória nem probabilidade validada.
+    """
+    pairs: list[tuple[float, int]] = []
+    for events in histories:
+        for index in range(1, len(events)):
+            prior = events[:index]
+            at = aware(events[index].created_at)
+            if at <= aware(prior[-1].created_at) or at > now:
+                continue
+            forecast = risk_fn(prior, elapsed_days(prior[-1].created_at, at), interval_fn(prior))
+            if forecast is not None:
+                pairs.append((forecast / 100, int(bool(unsuccessful(events[index])))))
+    if len(pairs) < 20:
+        return {'samples': len(pairs), 'brier': None, 'sufficient': False}
+    return {'samples': len(pairs),
+            'brier': round(sum((p-y)**2 for p,y in pairs) / len(pairs), 4),
+            'sufficient': True}
 
 
 def adjusted_risk(raw_risk: float | None, correction: float) -> float | None:
@@ -178,6 +202,21 @@ def ranking_score(priority: float, risk: float | None) -> tuple[float, float]:
     """Fórmula-base intacta; risco adiciona no máximo 8 pontos à ordenação."""
     bonus = round(0.08 * risk, 2) if risk is not None else 0.0
     return round(min(100.0, priority + bonus), 2), bonus
+
+
+def topic_opportunity_bonus(evidence: dict[str, Any]) -> float:
+    """Bônus limitado 0–6 baseado em falhas observadas por assunto.
+
+    Sem evidências = zero bônus; vínculo da questão sem tentativas não pontua.
+    Amostras pequenas têm peso reduzido. Não utiliza pesos do edital nem dados
+    de inéditas agregadas por matéria.
+    """
+    n = evidence['distinct_questions']
+    rate = evidence['question_accuracy_percent']
+    if not n or rate is None:
+        return 0.0
+    gap = max(0.0, 90.0 - rate) / 90.0
+    return round(6.0 * gap * min(1.0, n / 5.0), 2)
 
 
 def semi_novel_progress(questions: list[Question], attempts_by_question: dict[int, list[QuestionAttempt]],
@@ -195,10 +234,10 @@ def semi_novel_progress(questions: list[Question], attempts_by_question: dict[in
         if events:
             first_pass += 1
         last_spaced = None
-        for i in range(1, len(events)):
-            gap = elapsed_days(events[i-1].created_at, aware(events[i].created_at)) or 0.0
+        if len(events) >= 2:
+            gap = elapsed_days(events[-2].created_at, aware(events[-1].created_at)) or 0.0
             if gap >= 7:
-                last_spaced = events[i]
+                last_spaced = events[-1]
         if last_spaced is not None:
             verified.append((question.id, aware(last_spaced.created_at),
                              bool(last_spaced.is_correct and last_spaced.confidence == 3)))
@@ -258,7 +297,7 @@ def mastery_evidence(records: list[TopicReview], attempts: list[QuestionAttempt]
     correct_count = sum(int(r.is_correct and getattr(r, 'confidence', None) in (2, 3))
                         for r in last_by_question.values())
     rate = correct_count / distinct_count if distinct_count else 0.0
-    sample_ok = distinct_count >= 5 and len(attempts) >= 8 and rate >= 0.85
+    sample_ok = distinct_count >= 5 and len(attempts) >= 8 and rate >= 0.90
     pending_concepts = pending_concept_errors(attempts)
     critical_clear = not pending_topic_gap(records) and pending_concepts == 0
     explained = bool(last and getattr(last, 'explained_without_consulting', False) and last.grade == 4)
@@ -268,7 +307,7 @@ def mastery_evidence(records: list[TopicReview], attempts: list[QuestionAttempt]
     checks = {
         'three_grade_fours': streak_ok,
         'spaced_recoveries': spaced_ok,
-        'varied_questions_85_percent': sample_ok,
+        'varied_questions_90_percent': sample_ok,
         'no_critical_gaps': critical_clear,
         'explained_without_consulting': explained,
         'applied_to_new_questions': novel_applied,
@@ -375,6 +414,16 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         lambda r: not r.is_correct or r.confidence != 3, now)
         for scope, rows in question_subject_histories.items()}
 
+    # Auditoria não exibida como promessa de probabilidade individual.
+    topic_audits = {scope: risk_calibration_audit(
+        rows, topic_interval, topic_forgetting_risk,
+        lambda r: r.grade <= 2 or bool(getattr(r, 'critical_gap', False)), now)
+        for scope, rows in topic_subject_histories.items()}
+    question_audits = {scope: risk_calibration_audit(
+        rows, question_interval, question_forgetting_risk,
+        lambda r: not r.is_correct or r.confidence != 3, now)
+        for scope, rows in question_subject_histories.items()}
+
     topic_queue = []
     for topic in topics:
         history = by_topic[topic.id]
@@ -395,6 +444,8 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         priority = round(0.35 * components['D'] + 0.30 * components['T'] +
                          0.25 * components['E'] + 0.10 * components['I'], 2)
         recommended_priority, risk_bonus = ranking_score(priority, risk)
+        opportunity_bonus = topic_opportunity_bonus(evidence)
+        recommended_priority = round(min(100.0, recommended_priority + opportunity_bonus), 2)
         state = topic_state(history, evidence)
         if not history and reference is None:
             reason = 'Assunto novo — primeira avaliação disponível'
@@ -419,7 +470,9 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'risk_calibration_samples': calibration_samples,
             'risk_calibration_adjustment_pp': round(100 * correction, 2),
+            'risk_calibration_audit': topic_audits.get(topic.subject_id),
             'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
+            'opportunity_priority_bonus': opportunity_bonus,
             'mastered': mastered, 'learning_state': state, 'mastery_evidence': evidence,
             'priority': priority, 'priority_components': components,
             'next_due_at': next_due, 'reason': reason,
@@ -485,6 +538,7 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
             'risk_calibration_samples': calibration_samples,
             'risk_calibration_adjustment_pp': round(100 * correction, 2),
+            'risk_calibration_audit': question_audits.get(scope_id),
             'ranking_score': recommended_priority, 'risk_priority_bonus': risk_bonus,
             'overdue_days': round(max(0.0, days - interval), 2) if days is not None else 0.0,
             'priority': priority, 'next_due_at': next_due, 'reason': reason,
