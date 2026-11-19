@@ -17,3 +17,5 @@ htmlcov/
 build/
 dist/
 \n# Backups locais da v0.8\n*.v08.bak\n
+# Copias locais feitas pela revisao de linguagem
+*.antes-textos.bak

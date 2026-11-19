@@ -145,39 +145,146 @@ function renderManagedQuestions() {
 }
 function availableTopics(){return state.cardsQueue.topics.filter(t=>!state.reviewedTopics.has(t.id)&&!state.skippedTopics.has(t.id));}
 function visibleQuestions(){return state.errorsQueue.questions;}
-function priority(entry) {return entry.priority>=58?'Alta':entry.priority>=38?'Média':'Baixa';}
-function dateInfo(entry) {return entry.days_since==null?'Sem avaliações anteriores':`Última avaliação: ${entry.days_since<1?'há menos de 1 dia':`há ${Math.floor(entry.days_since)} dia(s)`}`;}
+/* explicacoes claras v0.9.1 */
+// Todos os números de prioridade organizam a fila: NÃO são taxas de acerto.
+const displayNumber = n => n == null || !Number.isFinite(Number(n)) ? '—' :
+  Number(n).toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1});
+const dayLabel = n => `${n} ${Number(n) === 1 ? 'dia' : 'dias'}`;
 const STATE_LABELS = {em_aprendizagem:'Em aprendizagem',em_consolidacao:'Em consolidação',dominado:'Dominado'};
-function meta(entry){
-  const status=entry.maintenance_required?'Prazo atingido nesta matéria':
-    (entry.learning_state ? (STATE_LABELS[entry.learning_state]||'Em aprendizagem'):
-    entry.due?'Precisa de revisão':'Em manutenção');
-  const risk=entry.forgetting_risk_percent == null ? 'Risco: sem histórico' :
-    `Risco estimado: ${Number(entry.forgetting_risk_percent).toFixed(1)}% (ajuste empírico, não validado)`;
-  const finalScore = entry.ranking_score ?? entry.priority;
-  const riskBump = entry.risk_priority_bonus || 0;
-  const opportunityBump=entry.opportunity_priority_bonus || 0;
-  return `<div class="priority-line"><span><strong>Prioridade ${priority({...entry,priority:finalScore})} · ${Number(finalScore).toFixed(1)}/100</strong>${riskBump?` <small>(+${riskBump.toFixed(1)} risco)</small>`:''}${opportunityBump?` <small>(+${opportunityBump.toFixed(1)} oportunidade observada)</small>`:''}</span><span>${esc(dateInfo(entry))}</span><span>${esc(status)}</span><span>${esc(risk)}</span></div>`;
+
+function priority(entry) {
+  const score = Number(entry.ranking_score ?? entry.priority ?? 0);
+  return score >= 58 ? 'Alta' : score >= 38 ? 'Média' : 'Baixa';
 }
+function dateInfo(entry) {
+  if (entry.days_since == null) return 'Sem revisão anterior registrada';
+  if (entry.learning_state && !entry.attempts) return 'Estudo inicial registrado; ainda sem revisão';
+  if (entry.days_since < 1) return 'Última avaliação: hoje';
+  const days = Math.floor(entry.days_since);
+  return `Última avaliação: há ${dayLabel(days)}`;
+}
+function riskDescription(entry) {
+  if (entry.forgetting_risk_percent == null) return 'Esquecimento: ainda sem histórico para estimar';
+  const names = {alto:'alto',moderado:'moderado',baixo:'baixo'};
+  return `Esquecimento: risco ${names[entry.forgetting_risk_level] || 'estimado'} (estimativa)`;
+}
+function meta(entry) {
+  const score = entry.ranking_score ?? entry.priority;
+  const status = entry.maintenance_required ? 'Prazo de revisão alcançado nesta matéria' :
+    entry.learning_state ? `Progresso: ${STATE_LABELS[entry.learning_state] || 'Em aprendizagem'}` :
+    entry.attempts ? 'Questão em acompanhamento' : 'Questão ainda sem reavaliação';
+  return `<div class="priority-line">
+    <span><strong>Prioridade ${priority(entry)} · ${displayNumber(score)} de 100</strong></span>
+    <span>${esc(status)}</span>
+    <span>${esc(dateInfo(entry))}</span>
+    <span>${esc(riskDescription(entry))}</span>
+  </div>`;
+}
+function stateDescription(entry, evidence) {
+  if (entry.learning_state === 'dominado') {
+    return 'Você reuniu todas as evidências de domínio que o sistema acompanha. O assunto permanece na fila para revisões de manutenção, mesmo depois de dominado.';
+  }
+  if (entry.learning_state === 'em_consolidacao') {
+    return 'Você já demonstrou progresso nas revisões. Ainda faltam algumas evidências para confirmar que consegue manter esse conhecimento ao longo do tempo.';
+  }
+  if (!entry.attempts) {
+    return 'Ainda não há revisões deste assunto registradas no sistema. Por enquanto, não existem dados suficientes para avaliar quanto você já domina.';
+  }
+  if (!evidence.no_critical_gaps) {
+    return 'Seus registros ainda mostram alguma dificuldade conceitual importante ou um erro de conceito pendente. Por isso, o assunto permanece em aprendizagem.';
+  }
+  return 'Na última revisão, você ainda teve dificuldade para lembrar partes importantes do conteúdo. Esse estado descreve o histórico registrado, não sua capacidade ou sua nota na prova.';
+}
+function reviewDescription(entry) {
+  const interval = Number(entry.interval_days) || 1;
+  if (entry.days_since == null) {
+    return `O sistema usa inicialmente ${dayLabel(interval)} como intervalo de referência, contado a partir do primeiro registro de estudo ou revisão.`;
+  }
+  if (entry.learning_state && !entry.attempts) {
+    return `O intervalo inicial de ${dayLabel(interval)} é contado desde o estudo registrado. Você decide quando realizar a primeira revisão.`;
+  }
+  if (entry.maintenance_required) {
+    return `O intervalo de referência de ${dayLabel(interval)} já foi alcançado. O assunto sobe na fila desta matéria, mas você não precisa estudá-lo hoje.`;
+  }
+  return `O intervalo atual de referência é de ${dayLabel(interval)} desde a última revisão. O assunto continua na fila, sem exigir um retorno diário.`;
+}
+
+// Apenas uma tradução dos motivos existentes: não sugere como responder à questão.
+const REASON_TEXT = {
+  'Assunto novo — primeira avaliação disponível': 'Você ainda não registrou revisões deste assunto.',
+  'Primeira revisão após estudo inicial': 'Este assunto já foi estudado, mas ainda não tem uma revisão registrada.',
+  'Primeira revisão programada': 'Este assunto está disponível para sua primeira revisão.',
+  'Prazo de revisão atingido — prioridade nesta matéria': 'O intervalo de revisão chegou. Por isso, este item aparece antes dos que ainda estão dentro do prazo nesta matéria.',
+  'Erro conceitual pendente — reforçar antes de avançar': 'Há uma dificuldade conceitual importante ou um erro de conceito ainda registrado como pendente.',
+  'Domínio comprovado — manutenção espaçada': 'Os critérios de domínio foram atendidos. O assunto continua na fila para manutenção.',
+  'Consolidação e revisões espaçadas': 'Você já registrou progresso, mas ainda faltam evidências para confirmar domínio.',
+  'Questão dominada — considere arquivá-la': 'O histórico desta questão mostra acertos seguros e espaçados. O arquivamento está disponível se você desejar.',
+  'Erros recorrentes — revisar o conceito': 'Esta questão foi errada em mais de uma das últimas tentativas.',
+  'Acerto com chute — não consolidado': 'Você acertou na última tentativa, mas registrou pouca segurança na resposta.',
+  'Questão ainda não reavaliada': 'Esta questão foi cadastrada, mas ainda não foi reavaliada aqui.',
+  'Manutenção espaçada': 'Este item continua na fila para acompanhar como você retém o conhecimento com o tempo.'
+};
+function readableReason(reason) { return REASON_TEXT[reason] || reason || 'Item disponível para revisão.'; }
+
 function masteryDetails(entry) {
-  const c=entry.priority_components, e=entry.mastery_evidence;
-  if(!c||!e)return '';
-  const checks=[
-    ['three_grade_fours','3 notas 4 consecutivas'],
-    ['spaced_recoveries','Intervalos crescentes, com última lacuna de ≥ 14 dias'],
-    ['varied_questions_90_percent',`Acertos confiáveis ≥ 90% em links distintos do caderno (${e.distinct_questions} links; ${e.question_accuracy_percent??'—'}%)`],
-    ['no_critical_gaps','Sem lacunas ou erros conceituais graves pendentes'],
-    ['explained_without_consulting','Explicação sem consulta confirmada'],
-    ['applied_to_new_questions','Aplicação em questões variadas sem consulta confirmada']
+  const e = entry.mastery_evidence, c = entry.priority_components;
+  if (!e || !c) return '';
+  const count = Number(e.distinct_questions) || 0;
+  const attempts = Number(e.total_question_attempts) || 0;
+  const accuracy = e.question_accuracy_percent == null ? 'ainda não calculado' : `${displayNumber(e.question_accuracy_percent)}%`;
+  const checks = [
+    ['three_grade_fours', 'Lembrar todo o conteúdo em três revisões seguidas (nota 4, sem lacunas importantes).'],
+    ['spaced_recoveries', 'Fazer essas revisões em dias diferentes, aumentando os intervalos, com pelo menos 14 dias entre as duas últimas.'],
+    ['varied_questions_90_percent', `Ter pelo menos 90% de acertos sem chutes nas questões diferentes do Caderno de erros vinculadas a este assunto. Registros atuais: ${count} ${count === 1 ? 'questão distinta' : 'questões distintas'}, ${attempts} ${attempts === 1 ? 'avaliação' : 'avaliações'} e ${accuracy} de acertos. O sistema exige ao menos 5 questões distintas e 8 avaliações.`],
+    ['no_critical_gaps', 'Não ter lacunas importantes ou erros de conceito ainda registrados como pendentes.'],
+    ['explained_without_consulting', 'Registrar uma revisão completa em que conseguiu explicar o assunto sem consultar o material.'],
+    ['applied_to_new_questions', 'Confirmar, na revisão mais recente, que conseguiu aplicar o assunto em questões variadas, sem consulta.']
   ];
-  const breakdown=`D ${c.D.toFixed(1)} · T ${c.T.toFixed(1)} · E ${c.E.toFixed(1)} · I ${c.I.toFixed(1)}`;
-  return `<details class="mastery-details"><summary>Entender prioridade e critérios de domínio</summary>
-    <p><strong>Fórmula:</strong> 0,35D + 0,30T + 0,25E + 0,10I (0–100). ${esc(breakdown)}.</p>
-    <p>Intervalo adaptativo: ${entry.interval_days} dia(s). Se vencer, o assunto sobe na fila <strong>somente desta matéria</strong>. Você escolhe quando voltar a estudá-la.</p>
-    <p>Prioridade-base ${Number(entry.priority).toFixed(1)}/100 + risco (até 8 pontos) + oportunidade observada (até 6 pontos) = ${Number(entry.ranking_score??entry.priority).toFixed(1)}/100 na recomendação. O risco recebe ajuste empírico conservador quando há histórico suficiente, sem ser probabilidade validada.</p>
-    <strong>Estado: ${esc(STATE_LABELS[entry.learning_state]||'Em aprendizagem')}</strong>
-    <ul class="mastery-checklist">${checks.map(([key,label])=>`<li>${e[key]?'✓':'○'} ${esc(label)}</li>`).join('')}</ul>
-    <p class="panel-help">Variedade é confirmada por você; links previamente errados não são questões inéditas e não estimam sua nota na prova.</p>
+  const achieved = checks.filter(([key]) => Boolean(e[key])).length;
+  const score = entry.ranking_score ?? entry.priority;
+  const base = entry.priority;
+  const riskBonus = Number(entry.risk_priority_bonus) || 0;
+  const opportunityBonus = Number(entry.opportunity_priority_bonus) || 0;
+  const values = [
+    ['Dificuldade para lembrar', c.D, '35%'],
+    ['Tempo desde a revisão', c.T, '30%'],
+    ['Falhas registradas nas revisões', c.E, '25%'],
+    ['Importância que você cadastrou', c.I, '10%']
+  ];
+  return `<details class="mastery-details">
+    <summary>Entenda sua prioridade e seu progresso</summary>
+    <div class="mastery-content">
+      <section class="mastery-section mastery-state">
+        <h4>Seu estado: ${esc(STATE_LABELS[entry.learning_state] || 'Em aprendizagem')}</h4>
+        <p>${esc(stateDescription(entry, e))}</p>
+      </section>
+      <section class="mastery-section">
+        <h4>Por que este assunto aparece nesta posição?</h4>
+        <p><strong>Prioridade ${priority(entry).toLowerCase()}: ${displayNumber(score)} de 100.</strong> Essa nota serve apenas para organizar os assuntos <strong>dentro da matéria que você escolheu</strong>. Ela não é sua porcentagem de acertos nem uma previsão da nota na prova.</p>
+        <p>O sistema observa a dificuldade das revisões, o tempo decorrido, os esquecimentos registrados e a importância cadastrada. Também faz pequenos ajustes com base no histórico disponível.</p>
+      </section>
+      <section class="mastery-section">
+        <h4>Quando este assunto volta a ganhar prioridade?</h4>
+        <p>${esc(reviewDescription(entry))}</p>
+        <p>Você escolhe a matéria e quando voltar a estudá-la. Um prazo alcançado muda a ordem da fila, não cria uma obrigação diária.</p>
+      </section>
+      <section class="mastery-section">
+        <h4>${entry.learning_state === 'dominado' ? 'Como o domínio foi confirmado?' : 'O que falta para ser considerado dominado?'}</h4>
+        <p><strong>${achieved} de ${checks.length} critérios atendidos.</strong> O sistema marca somente o que já encontrou nos seus registros.</p>
+        <ul class="mastery-checklist">${checks.map(([key, label]) => `<li class="${e[key] ? 'criterion-done' : 'criterion-pending'}"><span class="criterion-symbol" aria-hidden="true">${e[key] ? '✓' : '○'}</span><span><strong>${e[key] ? 'Atendido' : 'Ainda não comprovado'}:</strong> ${esc(label)}</span></li>`).join('')}</ul>
+        <p class="mastery-note">As questões do Caderno de erros já foram erradas anteriormente. O percentual acima se refere somente a esses registros, não às questões inéditas nem ao seu desempenho geral na prova.</p>
+      </section>
+      <details class="calculation-details">
+        <summary>Ver os números usados no cálculo</summary>
+        <p>A nota inicial reúne quatro informações. Os percentuais abaixo indicam a participação de cada informação no cálculo, <strong>não o peso da matéria na prova</strong>.</p>
+        <dl class="calculation-list">${values.map(([label, value, weight]) => `<div><dt>${esc(label)} <small>(peso de ${weight})</small></dt><dd>${displayNumber(value)} de 100</dd></div>`).join('')}</dl>
+        <p><strong>Nota inicial:</strong> ${displayNumber(base)} de 100.</p>
+        <p><strong>Ajuste por risco de esquecimento:</strong> +${displayNumber(riskBonus)} ponto(s) (máximo de 8).</p>
+        <p><strong>Ajuste pelas dificuldades observadas no assunto:</strong> +${displayNumber(opportunityBonus)} ponto(s) (máximo de 6).</p>
+        <p><strong>Prioridade final:</strong> ${displayNumber(score)} de 100. O resultado nunca ultrapassa 100.</p>
+        <p>O indicador de esquecimento é uma estimativa aproximada baseada no histórico, não uma probabilidade comprovada de esquecer.</p>
+      </details>
+    </div>
   </details>`;
 }
 function empty(title,description,command,label) {return `<div class="empty-state"><h3>${esc(title)}</h3><p>${esc(description)}</p>${command?`<button type="button" class="button primary" data-action="${command}">${esc(label)}</button>`:''}</div>`;}
@@ -193,7 +300,7 @@ function renderCards() {
     return;
   }
   state.activeTopicId=topic.id;
-  $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(topic.reason)}. Tente explicar sem consultar antes de avaliar.</p>${meta(topic)}${masteryDetails(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
+  $('topicStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">PRÓXIMO ASSUNTO RECOMENDADO</div><h3>${topic.code?`<span class="card-code">${esc(topic.code)}</span> `:''}${esc(topic.title)}</h3><p class="card-description">${esc(readableReason(topic.reason))}.</p>${meta(topic)}${masteryDetails(topic)}<div class="actions"><button type="button" class="button primary" data-action="finish-topic" data-id="${topic.id}">Marcar como finalizado</button><button type="button" class="button outline" data-action="skip-topic" data-id="${topic.id}">Pular por agora</button></div></article>`;
 }
 function renderQuestions() {
   const progress=state.errorsQueue.semi_novel_progress;
@@ -209,7 +316,7 @@ function renderQuestions() {
   $('questionPosition').textContent=q?`${state.questionIndex+1} de ${questions.length}`:'Sem questões';
   if(!q){$('questionStudyCard').innerHTML=state.errorsSubject?empty('Seu caderno está vazio nesta matéria','Cadastre o link de uma questão errada nessa matéria para começar a revisão.','new-question','Adicionar questão'):empty('Escolha a matéria do caderno de erros','Os vencimentos só ordenam questões da matéria que você selecionar.');return;}
   const done=state.answeredQuestions.has(q.id);
-  $('questionStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">LINK RECOMENDADO · ${state.questionIndex+1}/${questions.length}</div><h3>${esc(q.statement?q.statement.slice(0,150):'Retome esta questão')}</h3><p class="card-description">${esc(q.reason)}.</p>${q.url?`<a class="link-question" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">Abrir link da questão ↗</a>`:''}${q.statement&&q.statement.length>150?`<p class="statement">${esc(q.statement)}</p>`:''}${meta(q)}${q.archive_suggested?`<div class="suggestion"><strong>Arquivamento sugerido</strong><p>${esc(q.archive_reason||'Você demonstrou domínio consistente.')}</p></div>`:''}<div class="actions"><button type="button" class="button primary" data-action="assess-question" data-id="${q.id}" ${done?'disabled':''}>${done?'Avaliação salva':'Avaliar desempenho'}</button><button type="button" class="button outline" data-action="archive-question" data-id="${q.id}">${q.archive_suggested?'Arquivar link recomendado':'Arquivar link'}</button></div>${done?'<p class="helper">Esta questão já foi avaliada nesta passagem. O refresh permite um novo ciclo, sem apagar a tentativa.</p>':''}</article>`;
+  $('questionStudyCard').innerHTML=`<article class="study-card"><div class="card-eyebrow">LINK RECOMENDADO · ${state.questionIndex+1}/${questions.length}</div><h3>${esc(q.statement?q.statement.slice(0,150):'Retome esta questão')}</h3><p class="card-description">${esc(readableReason(q.reason))}.</p>${q.url?`<a class="link-question" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">Abrir link da questão ↗</a>`:''}${q.statement&&q.statement.length>150?`<p class="statement">${esc(q.statement)}</p>`:''}${meta(q)}${q.archive_suggested?`<div class="suggestion"><strong>Arquivamento sugerido</strong><p>${esc(q.archive_reason||'Você demonstrou domínio consistente.')}</p></div>`:''}<div class="actions"><button type="button" class="button primary" data-action="assess-question" data-id="${q.id}" ${done?'disabled':''}>${done?'Avaliação salva':'Avaliar desempenho'}</button><button type="button" class="button outline" data-action="archive-question" data-id="${q.id}">${q.archive_suggested?'Arquivar link recomendado':'Arquivar link'}</button></div>${done?'<p class="helper">Esta questão já foi avaliada nesta passagem. O refresh permite um novo ciclo, sem apagar a tentativa.</p>':''}</article>`;
 }
 
 // v0.9 — apenas resultados observados. Nenhuma tentativa agregada é atribuída a um assunto.

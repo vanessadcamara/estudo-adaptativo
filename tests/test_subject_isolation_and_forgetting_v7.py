@@ -143,6 +143,8 @@ def test_ui_requires_subject_choice_for_both_piles(client):
     assert 'state.cardsQueue' in js and 'state.errorsQueue' in js
     assert 'loadSelectedQueue(\'cards\')' in js and 'loadSelectedQueue(\'errors\')' in js
     assert 'api(`/queue?subject_id=${subjectId}`)' in js
-    assert 'Risco estimado' in js
+    assert 'function riskDescription(entry)' in js
+    assert 'Esquecimento: risco' in js
+    assert 'Esquecimento: ainda sem histórico' in js
     assert 'Nenhum vencimento força você' in js
     assert 'Revisão obrigatória' not in js
