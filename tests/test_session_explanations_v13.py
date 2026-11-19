@@ -61,7 +61,7 @@ def test_frontend_explains_refresh_and_comparison_with_actual_progress(client):
     html=client.get('/').text
     js=client.get('/static/app.js').text
     assert 'Concluir sessão e atualizar fila' in html
-    assert 'v0.13' in html
+    assert 'v0.15' in html
     assert 'state.session = await api(\'/sessions\',\'POST\')' in js
     assert 'api(`/sessions/${state.session.id}/refresh`,\'POST\')' in js
     assert 'recent_sessions?.[0]?.refreshed_at' in js

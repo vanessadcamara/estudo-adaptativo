@@ -9,6 +9,8 @@ def test_retention_adjustment_requires_evidence_and_uses_actual_elapsed_time():
     now = datetime(2026, 11, 19, tzinfo=timezone.utc)
     def make(grades, spacing=15):
         return [TopicReview(grade=g, difficulty=1, critical_gap=False,
+                            recall_level=3 if g == 4 else 0, accuracy_level=3 if g == 4 else 0,
+                            assistance_level=0, gap_level=0 if g == 4 else 3,
                             created_at=now + timedelta(days=spacing*i))
                 for i, g in enumerate(grades)]
     success = lambda r: r.grade >= 3

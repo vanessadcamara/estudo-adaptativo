@@ -99,11 +99,12 @@ class QuestionArchiveIn(ArchiveIn):
 
 class TopicReviewIn(BaseModel):
     topic_id: int
-    # Clientes anteriores continuam aceitos; o formulário v0.13 infere a nota.
+    # Clientes anteriores continuam aceitos; questionários v0.13 e v0.14 inferem a nota.
     grade: int | None = Field(default=None, ge=0, le=4)
     recall_level: int | None = Field(default=None, ge=0, le=3)
     accuracy_level: int | None = Field(default=None, ge=0, le=3)
     assistance_level: int | None = Field(default=None, ge=0, le=3)
+    application_level: int | None = Field(default=None, ge=0, le=2)
     gap_level: int | None = Field(default=None, ge=0, le=3)
 
     @model_validator(mode='after')
@@ -114,8 +115,13 @@ class TopicReviewIn(BaseModel):
                 raise ValueError('Responda todas as quatro perguntas do questionário de revisão.')
             if self.grade is not None:
                 raise ValueError('Nota é inferida automaticamente; não envie nota manual junto ao questionário.')
+            if self.application_level is not None and self.applied_to_new_questions:
+                if self.application_level != 2:
+                    raise ValueError('Aplicação independente contradiz o resultado declarado.')
         elif self.grade is None:
             raise ValueError('Informe o questionário completo ou a nota do formulário anterior.')
+        elif self.application_level is not None:
+            raise ValueError('Aplicação v0.14 requer o questionário estruturado completo.')
         return self
     difficulty: int | None = Field(default=None, ge=1, le=3)
     critical_gap: bool = False

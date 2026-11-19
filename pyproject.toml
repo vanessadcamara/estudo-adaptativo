@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "estudo-adaptativo"
-version = "0.13.0"
+version = "0.16.0"
 description = "Revisão adaptativa e caderno de erros para concursos"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,10 +16,12 @@ dependencies = [
     "pydantic>=2.8,<3",
     "python-dotenv>=1.0,<2",
     "argon2-cffi>=23,<26",
+    "fsrs>=6.3.2,<7",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "httpx>=0.27,<1"]
+optimizer = ["fsrs[optimizer]>=6.3.2,<7"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

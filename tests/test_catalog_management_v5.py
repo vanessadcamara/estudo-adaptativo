@@ -77,7 +77,7 @@ def test_frontend_has_real_dialogs_and_cache_busting(client):
     assert 'id="subjectDialog"' in html and 'id="topicDialog"' in html
     assert 'id="questionEditorDialog"' in html and 'id="reviewDialog"' in html
     assert 'id="attemptDialog"' in html and 'id="newSubject"' in html
-    assert '/static/app.js?v=13' in html
+    assert '/static/app.js?v=15' in html
     assert client.get('/static/app.js').headers.get('cache-control')=='no-store'
     js=client.get('/static/app.js').text
     for route in ['/subjects/', '/topics/', '/questions/', '/topic-reviews','/question-attempts']:

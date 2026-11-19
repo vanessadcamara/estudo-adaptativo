@@ -1,8 +1,8 @@
-/* v0.13 — retenção estruturada e duas escalas de diversificação. */
+/* v0.16 — FSRS-6: official full-parameter optimizer worker + conservative fallback. */
 'use strict';
 const state = {
   csrf: null, session: null, lastRefreshAt: null,
-  subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [], novelRecords: [], performance: null,
+  subjects: [], allSubjects: [], topics: [], allTopics: [], allQuestions: [], novelRecords: [], performance: null, retentionModels: [],
   cardsQueue: {topics: [], questions: []}, errorsQueue: {topics: [], questions: []},
   currentTab: 'performance', settingsTab: 'cards', cardsSubject: '', errorsSubject: '',
   activeTopicId: null, questionIndex: 0, queueRequest: {cards: 0, errors: 0},
@@ -109,13 +109,13 @@ async function loadSelectedQueue(kind) {
 }
 async function reloadAll({preserveQuestion=true}={}) {
   const oldQuestion = preserveQuestion ? visibleQuestions()[state.questionIndex]?.id : null;
-  const [allSubjects,allTopics,allQuestions,openSession,novelRecords,performance,dashboard] = await Promise.all([
+  const [allSubjects,allTopics,allQuestions,openSession,novelRecords,performance,dashboard,retentionModels] = await Promise.all([
     api('/subjects?include_archived=true'),api('/topics?include_archived=true'),
     api('/questions?include_archived=true'),api('/sessions/open'),
-    api('/novel-practice?include_archived=true'),api('/performance'),api('/dashboard'),
+    api('/novel-practice?include_archived=true'),api('/performance'),api('/dashboard'),api('/retention-models'),
   ]);
   state.allSubjects=allSubjects;state.allTopics=allTopics;state.allQuestions=allQuestions;
-  state.novelRecords=novelRecords;state.performance=performance;
+  state.novelRecords=novelRecords;state.performance=performance;state.retentionModels=retentionModels;
   state.subjects=allSubjects.filter(s=>!s.archived_at);
   state.topics=allTopics.filter(t=>!t.archived_at && state.subjects.some(s=>s.id===t.subject_id));
   state.session=openSession;
@@ -129,7 +129,7 @@ async function reloadAll({preserveQuestion=true}={}) {
   await Promise.all([loadSelectedQueue('cards'),loadSelectedQueue('errors')]);
   const updatedIndex = visibleQuestions().findIndex(q=>q.id===oldQuestion);
   state.questionIndex = updatedIndex >= 0 ? updatedIndex : 0;
-  renderCards();renderQuestions();
+  renderCards();renderQuestions();renderModelSummaries();
 }
 function subjectsVisible() {return $('showArchivedCatalog').checked?state.allSubjects:state.subjects;}
 function topicsVisible() {
@@ -210,13 +210,59 @@ function reviewDescription(entry) {
   if (entry.learning_state && !entry.attempts) {
     return `O intervalo inicial de ${dayLabel(interval)} é contado desde o estudo registrado. Você decide quando realizar a primeira revisão.`;
   }
+  const audit = entry.retention_validation || {};
+  const comparable = Number(audit.comparable_samples)||0;
+  const validation = comparable
+    ? ` Foram ${comparable} recuperações em intervalos comparáveis ao prazo atual, com ${audit.comparable_success_percent}% de sucesso declarado. ${audit.evidence_sufficient_for_growth ? 'Há evidência mínima para considerar ampliação conservadora.' : 'Ainda não há evidência suficiente para ampliar por calibração.'}`
+    : ' Ainda não há recuperações em intervalos comparáveis ao prazo atual para validá-lo.';
   const delta = Number(entry.interval_adjustment_days) || 0;
-  const adjustment = delta === 0 ? 'O histórico ainda não alterou esse prazo.' :
-    `O histórico de recuperações ajustou o prazo-base de ${dayLabel(entry.base_interval_days)} para ${dayLabel(interval)}.`;
+  const adjustment = (delta === 0 ? 'A calibração não alterou esse prazo.' :
+    `O histórico de recuperações ajustou o prazo-base de ${dayLabel(entry.base_interval_days)} para ${dayLabel(interval)}.`) + validation;
   if (entry.maintenance_required) {
     return `O intervalo de ${dayLabel(interval)} já foi alcançado. O item recebe preferência flexível, mas não supera automaticamente todos os outros. ${adjustment} Você escolhe quando voltar à matéria.`;
   }
   return `O intervalo de referência é de ${dayLabel(interval)} desde a última revisão. ${adjustment} O item continua disponível, sem exigir um retorno diário.`;
+}
+
+function renderModelSummaries() {
+  for (const [kind, element, subject] of [
+    ['topic','cardsModelSummary',state.cardsSubject],
+    ['question','errorsModelSummary',state.errorsSubject],
+  ]) {
+    if (!$(element)) continue;
+    if (!subject) {$(element).textContent = 'Escolha a matéria para ver o estágio do modelo estatístico.'; continue;}
+    const profile = (state.retentionModels || []).find(p => p.scope === `${kind}:${subject==='unassigned'?0:subject}`);
+    if (!profile) {$(element).textContent = 'FSRS pronto para observação; ainda sem eventos desta matéria para calibração.'; continue;}
+    const m = profile.metrics || {};
+    const full = profile.optimizer || {};
+    const title = full.active ? 'FSRS-6 otimizado (21 parâmetros) ativo' : profile.active ? 'FSRS leve ativo' : profile.stage === 'validando' ? 'FSRS em validação' : 'FSRS em observação';
+    $(element).textContent = `${title} · ${m.samples||0} recuperações espaçadas · ${m.validation_samples||0} avaliações reservadas para validação · `+
+      `Brier FSRS: ${m.holdout_brier_candidate ?? '—'} · Brier v0.14: ${m.holdout_brier_v14 ?? '—'}. `+
+      `Otimizador completo: ${full.status || 'aguardando'}${full.metrics?.reason ? ' — '+full.metrics.reason : ''}. `+
+      `${full.active ? 'Brier validado: '+(full.metrics?.brier_optimized ?? '—')+'. ' : ''}`+
+      `A meta de 90% do FSRS é retenção, não percentual de acertos na prova.`;
+  }
+}
+
+function statisticalModelDescription(entry) {
+  const model = entry.retention_model || {};
+  const validation = model.stage === 'otimizado' ? (model.optimizer || {}) : (model.validation || {});
+  const stage = model.stage === 'otimizado' ? 'FSRS-6 otimizado (21 parâmetros) ativo' :
+    model.stage === 'ativo' ? 'Ativo e calibrado' :
+    model.stage === 'validando' ? 'Em validação' :
+    model.stage === 'indisponivel' ? 'Biblioteca indisponível' : 'Acumulando histórico';
+  const source = model.source || (model.active ? 'FSRS-6 com calibração validada' : 'Regras conservadoras da v0.14');
+  const estimate = model.expected_recall_percent == null ?
+    'Ainda sem estimativa FSRS para este item.' :
+    `FSRS estima ${displayNumber(model.expected_recall_percent)}% de recuperação hoje (estimativa, não prova). `+
+    `Estabilidade estimada: ${displayNumber(model.stability_days)} dia(s); intervalo FSRS em observação: ${model.fsrs_interval_days} dia(s).`;
+  const samples = model.stage === 'otimizado' ? (validation.holdout_samples ?? 0) : (validation.validation_samples ?? 0);
+  const brier = model.stage === 'otimizado' ? validation.brier_optimized : validation.holdout_brier_candidate;
+  const accuracy = brier == null ? '—' : displayNumber(brier);
+  return `<p><strong>Modelo estatístico:</strong> ${esc(stage)}. Intervalo utilizado: ${esc(source)}.</p>`+
+    `<p>${esc(estimate)}</p>`+
+    `<p><strong>Validação temporal ${model.stage === 'otimizado' ? 'do FSRS completo' : 'da calibração leve'}:</strong> ${samples} eventos de validação; Brier ${accuracy} (menor é melhor). `+
+    `A meta FSRS de 90% de recuperação não é sua meta de 90% de acertos na prova.</p>`;
 }
 
 function rotationDescription(entry) {
@@ -257,6 +303,10 @@ function orderingCalculation(entry, card=false) {
     <p><strong>Redução por repetição recente (já considerando proteção por atraso):</strong> −${displayNumber(entry.diversification_penalty || 0)} ponto(s).</p>
     <p><strong>Redução por antecipação excessiva:</strong> −${displayNumber(entry.early_review_penalty || 0)} ponto(s).</p>
     <p><strong>Ordenação calculada:</strong> ${displayNumber(score)} pontos relativos. Pode ser negativa ou ultrapassar 100; isso não significa desempenho ou probabilidade de acertar.</p>
+    ${statisticalModelDescription(entry)}
+    <p><strong>Retenção em intervalos reais:</strong> ${entry.retention_validation?.spaced_samples || 0} recuperação(ões) espaçada(s) registrada(s); ${entry.retention_validation?.comparable_samples || 0} em intervalos comparáveis ao prazo atualmente sugerido. ${entry.retention_validation?.evidence_sufficient_for_growth ? 'Há suporte mínimo para calibrar a ampliação.' : 'Sem suporte suficiente para ampliar o prazo pela calibração.'}</p>
+    <p><strong>Recuperação por intervalo transcorrido:</strong> ${(entry.retention_validation?.by_actual_interval || []).filter(x => x.samples).map(x => `${esc(x.range)} dias: ${x.successes}/${x.samples}`).join(' · ') || 'Ainda sem recuperações espaçadas suficientes para comparação.'}</p>
+    <p>Os sucessos dos Cards vêm de autoavaliações estruturadas ou legadas; no Caderno, de acertos seguros. A observação não equivale a validação científica ou a garantia de retenção.</p>
     ${entry.starvation_protected ? '<p><strong>Exceção de retorno:</strong> este item elegível aparece à frente dos não protegidos, mesmo quando sua pontuação relativa é menor. Por isso, a ordem não depende apenas da soma dos pontos.</p>' : ''}
     <p>Risco e intervalos são estimativas baseadas nos registros disponíveis; não são probabilidades de esquecimento comprovadas.</p>`;
 }
@@ -547,8 +597,8 @@ $('showArchivedCatalog').addEventListener('change',renderCatalog);
 $('topicSubjectFilter').addEventListener('change',renderCatalog);
 $('manageQuestionsFilter').addEventListener('change',renderManagedQuestions);
 $('questionSubject').addEventListener('change',()=>updateQuestionTopics());
-$('cardsSubject').addEventListener('change',event=>safe(async()=>{state.cardsSubject=event.target.value;state.skippedTopics.clear();state.activeTopicId=null;state.cardsQueue=emptyQueue();renderCards();await loadSelectedQueue('cards');renderCards();}));
-$('errorsSubject').addEventListener('change',event=>safe(async()=>{state.errorsSubject=event.target.value;state.questionIndex=0;state.errorsQueue=emptyQueue();renderQuestions();await loadSelectedQueue('errors');renderQuestions();}));
+$('cardsSubject').addEventListener('change',event=>safe(async()=>{state.cardsSubject=event.target.value;state.skippedTopics.clear();state.activeTopicId=null;state.cardsQueue=emptyQueue();renderCards();await loadSelectedQueue('cards');renderCards();renderModelSummaries();}));
+$('errorsSubject').addEventListener('change',event=>safe(async()=>{state.errorsSubject=event.target.value;state.questionIndex=0;state.errorsQueue=emptyQueue();renderQuestions();await loadSelectedQueue('errors');renderQuestions();renderModelSummaries();}));
 $('questionPrevious').addEventListener('click',()=>{if(state.questionIndex>0){state.questionIndex--;renderQuestions();}});
 $('questionNext').addEventListener('click',()=>{if(state.questionIndex<visibleQuestions().length-1){state.questionIndex++;renderQuestions();}});
 $('cardsRefresh').addEventListener('click',()=>safe(refresh));
@@ -600,6 +650,7 @@ document.addEventListener('click',event=>{
     case 'finish-topic': {
       const topic=state.cardsQueue.topics.find(t=>t.id===id);if(!topic)return;
       state.reviewTopicId=id;$('topicFeedback').reset();$('reviewContext').textContent=topic.title;
+      $('reviewBefore').hidden=false;$('reviewAfter').hidden=true;
       showDialog('reviewDialog');break;
     }
     case 'assess-question': {
@@ -631,6 +682,17 @@ $('questionForm').addEventListener('submit',event=>{event.preventDefault();safe(
   });
   closeDialog('questionEditorDialog');await afterChange(id?'Questão atualizada.':'Questão salva no caderno de erros.');
 });});
+$('confirmReviewRecall').addEventListener('click',()=>{
+  const form=$('topicFeedback');
+  for(const name of ['recall_level','assistance_level']){
+    const options=[...form.querySelectorAll(`[name=\"${name}\"]`)];
+    if(!options.some(input=>input.checked)){options[0].reportValidity();return;}
+  }
+  // Esconder, sem desabilitar: respostas pré-consulta permanecem no FormData
+  // e não podem ser alteradas depois de conferir o material.
+  $('reviewBefore').hidden=true;$('reviewAfter').hidden=false;
+  $('reviewAfter').scrollIntoView({block:'start',behavior:'smooth'});
+});
 $('topicFeedback').addEventListener('submit',event=>{event.preventDefault();safe(async()=>{
   const data=new FormData(event.currentTarget),session=await ensureSession();
   const saved=await api(`/sessions/${session.id}/topic-reviews`,'POST',{
@@ -639,7 +701,7 @@ $('topicFeedback').addEventListener('submit',event=>{event.preventDefault();safe
     accuracy_level:Number(data.get('accuracy_level')),
     assistance_level:Number(data.get('assistance_level')),
     gap_level:Number(data.get('gap_level')),
-    applied_to_new_questions:data.get('applied_to_new_questions')==='on',
+    application_level:data.get('application_level')==='not_tested'?null:Number(data.get('application_level')),
     notes:String(data.get('notes')||'').trim()||null,
   });
   closeDialog('reviewDialog');state.activeTopicId=null;await afterChange(`Revisão registrada: nota inferida ${saved.inferred_grade}/4. Fila atualizada.`);

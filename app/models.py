@@ -86,6 +86,7 @@ class TopicReview(Base):
     recall_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     accuracy_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     assistance_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    application_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gap_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     critical_gap: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -129,3 +130,35 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class RetentionProfile(Base):
+    """Audit trail of an independently calibrated FSRS model by subject and item type.
+
+    JSON metrics are diagnostics; never store a claim of scientifically proven
+    individual retention or assign novel practice to individual subjects.
+    """
+    __tablename__ = 'retention_profiles'
+    scope: Mapped[str] = mapped_column(String(80), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(20), nullable=False, default='observando')
+    active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    factor: Mapped[float] = mapped_column(default=1.0, nullable=False)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # Separate 21-weight optimizer state; lightweight v0.15 fields remain backwards compatible.
+    optimizer_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    optimizer_parameters: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    optimizer_status: Mapped[str] = mapped_column(String(32), default='aguardando', nullable=False)
+    optimizer_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    optimizer_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class RetentionModelRun(Base):
+    """Historical calibration snapshots for reproducible diagnostics."""
+    __tablename__ = 'retention_model_runs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey('study_sessions.id', ondelete='RESTRICT'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    factor: Mapped[float] = mapped_column(nullable=False)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -42,7 +42,7 @@
 | Dificuldade em caso de erro | Conceito, Interpretação, Atenção, Cálculo, Outro | Não |
 | Anotação | Texto livre | Não |
 
-Após salvar, o algoritmo recalcula a fila e a UI tenta avançar para uma questão ainda não avaliada nesse intervalo entre refreshes. Questões já avaliadas permanecem acessíveis por Anterior/Próxima, porém não podem ser contadas duas vezes no mesmo lote técnico; para reavaliar, use `Atualizar prioridades`.
+Após salvar, o algoritmo recalcula a fila e a UI tenta avançar para uma questão ainda não avaliada nesse intervalo entre refreshes. Questões já avaliadas permanecem acessíveis por Anterior/Próxima, porém não podem ser contadas duas vezes no mesmo lote técnico; para reavaliar, conclua a sessão e inicie outra.
 
 **Arquivamento inteligente:** quando existem pelo menos seis tentativas, as quatro últimas corretas e marcadas como `Estava segura`, distribuídas ao longo de ao menos 14 dias, e acertos totais de pelo menos 80%, o card mostra **sugestão para arquivar link**. Jamais automático. Também há `Retirar da pilha` manual. Ambas usam o mesmo arquivamento reversível que conserva o histórico.
 
@@ -73,24 +73,24 @@ Não há formulário de registrar conteúdo novo. A API legada permanece para co
 - **E**: frequência de notas 0–2 ou lacuna crítica no histórico (0–100); sem histórico, E=50.
 - **I**: importância cadastrada 1–5, normalizada por `(importância−1)×25`.
 
-A fórmula-base P não contém bônus; a ordenação pode receber um bônus separado e limitado de risco (até 8 pontos). **Somente na fila da matéria que a estudante selecionou**, os tópicos que atingiram o intervalo de revisão aparecem antes dos não vencidos. Dentro dos grupos vencidos e não vencidos, a pontuação de recomendação (P + bônus limitado de risco) ordena os itens, com atraso como desempate. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
+A fórmula-base P não contém bônus; a ordenação pode receber um bônus separado e limitado de risco (até 8 pontos). **Somente na fila da matéria que a estudante selecionou**, os tópicos vencidos recebem bônus flexível e concorrem com os não vencidos; a ordem combina prioridade-base, risco, bônus de vencimento, diversificação em 3 e 12 sessões e proteção contra adiamentos excessivos. Um vencimento não determina quando a estudante estuda nem a matéria que deve escolher. Intervalos: 1–60 dias para dominados, no máximo 30 dias para não dominados. Nem um tópico fácil pode permanecer indefinidamente abaixo de tópicos ainda não vencidos.
 
 **Estados de aprendizagem:**
 
 - **Em aprendizagem**: sem histórico, nota 0–2 ou lacuna/erro conceitual grave pendente.
 - **Em consolidação**: recuperação razoável, mas algum requisito de domínio ainda não foi comprovado.
-- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥85% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões variadas sem consulta. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
+- **Dominado**: requisitos simultâneos: (1) três notas 4 consecutivas; (2) espaçamento crescente, com último intervalo ≥14 dias; (3) ao menos cinco questões distintas vinculadas e oito tentativas, com ≥90% de acertos seguros nos últimos resultados de cada questão; (4) nenhuma lacuna crítica ou erro conceitual pendente; (5) confirmação recente de explicação sem consulta; (6) confirmação recente de aplicação em questões variadas sem consulta. Esta última é autodeclarada — o sistema não lê automaticamente o conteúdo externo dos links.
 
 **Questões:** prioridade considerando insucesso suavizado (36%), frequência histórica de erros (19%), tempo relativo ao intervalo (29%), incerteza por amostra pequena (9%), bônus de cobertura (até 7%) e reforço para erros recorrentes (12%). A confiança reduz o valor de acertos chutados. Os intervalos sugeridos chegam até 60 dias; **não há impedimento de revisitar antes**.
 
-A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com vencimento à frente apenas das demais questões da mesma matéria selecionada; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
+A pontuação é uma heurística explícita, não um modelo de aprendizado de máquina treinado. A escala de prioridade de questões também é 0–100, com vencimento como preferência flexível dentro da matéria selecionada; **não se reaproveita a fórmula de Cards em questões**. Não há cortes por dias do calendário.
 
 ### Risco de esquecimento e evolução dos intervalos — v0.8
 
 - Cada Card ou questão já avaliada apresenta `forgetting_risk_percent` (0–100) e `forgetting_risk_level` (`baixo`, `moderado`, `alto`). Sem avaliação: risco nulo (`null`), nível `sem_dados`.
 - Estimativa: `risco = 100 × [1 − (1 − b) × exp(−0,43 × d / max(1,i))]`; `d` é o número de dias desde a última avaliação; `i` é o intervalo atual em dias; `b` é o risco inicial heurístico que depende da última nota, dificuldade e lapsos (Cards) ou do último resultado, confiança e erros recentes (Caderno). O termo temporal cresce com o tempo. É um indicador de apoio, **não** uma previsão probabilística calibrada.
 - Os intervalos individuais mantêm as regras v0.6 como base e recebem ajuste conservador quando houver falhas recentes anteriores ao último sucesso. Acertos seguros repetidos progressivamente elevam intervalos das questões até 60 dias; notas baixas e lapsos críticos encurtam o intervalo de assuntos. O limite de 30 dias para não dominados permanece.
-- O risco adiciona até 8 pontos somente à pontuação de **ordenação**, sem mudar a fórmula-base P dos Cards nem a fórmula-base do Caderno. O ajuste empírico por matéria e módulo usa revisões anteriores, com mínimo de 6 observações e correção máxima de ±12 pontos percentuais; é experimental, não probabilidade calibrada.
+- O risco adiciona até 8 pontos somente à pontuação de **ordenação**, sem mudar a fórmula-base P dos Cards nem a fórmula-base do Caderno. O ajuste empírico por matéria e módulo usa revisões anteriores, com pelo menos 12 observações e correção máxima de ±12 pontos percentuais; é experimental, não probabilidade calibrada.
 - Nenhum agendamento, notificação, penalidade ou cobrança diária decorre de `next_due_at` ou `maintenance_required` (nome técnico mantido por compatibilidade).
 
 ### Isolamento obrigatório das filas — v0.8
@@ -105,7 +105,7 @@ A pontuação é uma heurística explícita, não um modelo de aprendizado de m�
 - Dados: PostgreSQL, SQLAlchemy + Alembic; login e histórico existentes são preservados.
 - Migração anterior: `0006_mastery_evidence.py` adiciona `explained_without_consulting` e `applied_to_new_questions` em `topic_reviews`. Os registros antigos são preservados, com os novos campos iniciando em `false`. Migrações `0005` e anteriores seguem intactas.
 - APIs de atualização: `PATCH` para edição e para arquivamento/restauração de `/api/subjects/{id}`, `/api/topics/{id}`, `/api/questions/{id}`. Os endpoints `/archive` usam `{"archived":true|false}`.
-- Não há migração `0007` (nenhuma coluna ou tabela foi adicionada); os campos de risco são computados em cada consulta a partir das avaliações persistidas.
+- Existem as migrações `0007_novel_practice.py`, `0008_v13_assessments.py` e `0009_v14_application_retention.py`; os campos de risco continuam calculados a partir das avaliações persistidas.
 - Dados anteriores (`new_content_logs`, sessões e feedbacks) não são eliminados.
 - Deployment: branch `master`, Render web service Free, PostgreSQL Neon; start aplica `alembic upgrade head`.
 
@@ -124,3 +124,24 @@ A pontuação é uma heurística explícita, não um modelo de aprendizado de m�
 - O indicador conta somente a **última tentativa elegível de cada link distinto**, separada da anterior por pelo menos sete dias, e só considera acerto seguro (`confidence=3`) como retenção. Não duplica o mesmo link no denominador.
 - A evolução recente é comparada com o período anterior apenas com pelo menos cinco links distintos elegíveis em cada período; taxa global com menos de dez links é marcada como amostra pequena. Meta de referência de 90% é informativa, não previsão da prova.
 - Todas essas medidas são locais à matéria selecionada; links sem matéria continuam isolados. A associação opcional de um assunto não gera bônus de prioridade, mas continua relevante aos critérios rigorosos de domínio da v0.6.
+
+
+## v0.14 — Retenção observada e feedback em duas etapas (complemento vigente)
+
+Este complemento substitui descrições anteriores do questionário e da calibração onde houver divergência. Não altera a fórmula-base dos Cards, o isolamento de matéria, a alternância de 3 e 12 sessões nem a proteção de retorno da v0.13.
+
+- **Etapa 1, sem consulta:** registrar recuperação (0–3) e ajuda (0–3) *antes* de conferir o material. A interface oculta essas respostas após a confirmação para não alterá-las depois de consultar. A honestidade das respostas ainda depende da estudante.
+- **Etapa 2, após conferência:** precisão (0–3), lacunas (0–3), esforço (1–3) e aplicação em **questão diferente**, opcional (`NULL` não testou; `0` falhou; `1` parcial; `2` independente, sem consulta). Não testado não é contado como erro.
+- **Nota derivada:** consulta ou erro conceitual importante restringe a nota a no máximo 1, dicas/lacunas moderadas a 2, falha em aplicação a 2, aplicação parcial a 3. Nota 4 continua exigindo recuperação completa, precisão, sem ajuda e sem lacunas. As respostas do estudo inicial não são contadas como revisão espaçada.
+- **Registro persistente:** `topic_reviews.application_level` adicionado na migração `0009_v14_application_retention.py`; históricos antigos ficam com `NULL`. O booleano legado `applied_to_new_questions` é mantido para compatibilidade; no novo questionário é inferido somente para aplicação independente com nota 4.
+- **Auditoria temporal dos Cards e questões:** cada avaliação após intervalo real >=1 dia compara a recuperação com o prazo-base computado usando somente o histórico anterior à avaliação. O relatório oferece faixas de intervalo real (1–3, 4–7, 8–14, 15–30, 31+), contagem e sucessos. O resultado é retrospectivo, amostrado nas revisões realizadas, sem estimativa causal do esquecimento.
+- **Calibração positiva:** até +25% do prazo-base somente com >=8 avaliações recentes em intervalos entre 60% e 160% do prazo-base, >=85% de sucesso e limite inferior de Wilson 95% >=70%. Cards exigem >=8 respostas **estruturadas** nesse conjunto. Dados legados continuam consultáveis, mas não autorizam ampliação adicional sozinhos.
+- **Calibração negativa:** falhas recorrentes antes/próximo ao vencimento podem reduzir em até 25% a extensão do intervalo. Evidência agregada por matéria somente sustenta reduções conservadoras, jamais justifica ampliação de um assunto sem histórico individual suficiente.
+- **Limites:** os intervalos-base de 1 a 60 dias continuam regidos por nota/confiança e critérios de domínio; a auditoria controla somente o ajuste empírico **extra**. O limiar de Wilson é uma regra prudencial, não validação científica individual. Questões repetidas podem medir familiaridade; inéditas agregadas por matéria permanecem separadas.
+
+
+## v0.15 — Estatística de retenção FSRS em ativação progressiva
+
+A v0.15 acrescenta a biblioteca oficial FSRS-6 em observação, com perfis separados por matéria e entre Cards e Caderno. O histórico antigo não é apagado. Registros antigos sem evidência adequada não entram automaticamente no ajuste estatístico. O perfil é atualizado ao concluir sessões e só influencia os prazos se a validação temporal superar o fallback v0.14. Até então, o algoritmo v0.14 mantém os intervalos. Os modelos e versões de calibração ficam salvos em `retention_profiles` e `retention_model_runs`. Ver `README.md` para portas de ativação, métricas, mapeamentos, limites, dependências e ressalvas.
+
+O FSRS com parâmetros globais e calibração leve não equivale ao otimizador completo de 21 pesos por usuário do Anki; para não exigir PyTorch no Render gratuito, esta versão não faz essa otimização pesada na requisição. A validade preditiva pessoal continua dependendo do histórico longitudinal, especialmente porque Cards são assuntos amplos e as questões são repetidas.

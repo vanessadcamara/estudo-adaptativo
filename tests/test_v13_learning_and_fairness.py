@@ -10,7 +10,7 @@ from app.models import NewContentLog, StudySession, TopicReview
 def test_inferred_grade_is_conservative_and_transparent():
     assert inferred_grade(3, 3, 0, 0) == 4
     assert inferred_grade(3, 3, 1, 0) == 3
-    assert inferred_grade(3, 3, 3, 0) == 2
+    assert inferred_grade(3, 3, 3, 0) == 1  # v0.14: consulta limita nota a 1
     assert inferred_grade(3, 2, 0, 1) == 3
     assert inferred_grade(3, 3, 0, 2) == 2
     assert inferred_grade(0, 3, 0, 0) == 0

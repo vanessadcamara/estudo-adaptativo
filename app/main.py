@@ -15,7 +15,8 @@ from app.auth import (router as auth_router, find_session, require_login,
 from app.engine import build_queue
 from app.assessment import inferred_grade
 from app.performance import build_performance
-from app.models import NewContentLog, Question, QuestionAttempt, NovelPractice, StudySession, Subject, Topic, TopicReview, utcnow
+from app.statistical_retention import public_profile, update_profiles, profiles_for_queue
+from app.models import RetentionModelRun, NewContentLog, Question, QuestionAttempt, NovelPractice, StudySession, Subject, Topic, TopicReview, utcnow
 from app.schemas import (NovelPracticeIn, NovelPracticeOut, NewContentIn, QuestionAttemptIn, QuestionIn, QuestionOut,
                          SessionOut, SubjectIn, SubjectOut, TopicIn, TopicOut, TopicReviewIn, QuestionArchiveIn, SubjectEdit, TopicEdit, QuestionEdit, ArchiveIn)
 
@@ -26,7 +27,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Estudo Adaptativo BB", version="0.13.0", lifespan=lifespan,
+app = FastAPI(title="Estudo Adaptativo BB", version="0.16.0", lifespan=lifespan,
               docs_url=None if is_production() else "/docs",
               redoc_url=None if is_production() else "/redoc",
               openapi_url=None if is_production() else "/openapi.json")
@@ -144,6 +145,27 @@ def restore_novel_practice(record_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(item)
     return item
+
+
+@api.get('/retention-models')
+def retention_models(db: Session = Depends(get_db)):
+    """Estatísticas da validação, sem expor eventos pessoais ou credenciais."""
+    return [public_profile(p) for p in sorted(profiles_for_queue(db).values(), key=lambda x: x.scope)]
+
+
+@api.get('/retention-models/history')
+def retention_model_history(scope: str | None = Query(None, max_length=80),
+                            limit: int = Query(50, ge=1, le=200),
+                            db: Session = Depends(get_db)):
+    query = select(RetentionModelRun)
+    if scope is not None:
+        query = query.where(RetentionModelRun.scope == scope)
+    events = db.scalars(query.order_by(RetentionModelRun.created_at.desc(),
+                                      RetentionModelRun.id.desc()).limit(limit)).all()
+    return [{'id': r.id, 'scope': r.scope, 'session_id': r.session_id,
+             'created_at': r.created_at.isoformat(), 'stage': r.stage,
+             'active': r.active, 'factor': r.factor, 'metrics': r.metrics}
+            for r in events]
 
 
 @api.get('/performance')
@@ -421,7 +443,8 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
         raise HTTPException(409, "Este assunto já foi estudado nesta sessão. Inicie outra para revisá-lo.")
     structured = payload.recall_level is not None
     grade = (inferred_grade(payload.recall_level, payload.accuracy_level,
-                            payload.assistance_level, payload.gap_level)
+                            payload.assistance_level, payload.gap_level,
+                            application=payload.application_level)
              if structured else payload.grade)
     gap = payload.gap_level >= 2 if structured else payload.critical_gap
     explained = (grade == 4 and payload.assistance_level == 0 if structured
@@ -432,8 +455,11 @@ def record_topic_review(session_id: int, payload: TopicReviewIn, db: Session = D
                         recall_level=payload.recall_level,
                         accuracy_level=payload.accuracy_level,
                         assistance_level=payload.assistance_level,
+                        application_level=payload.application_level,
                         gap_level=payload.gap_level,
-                        applied_to_new_questions=payload.applied_to_new_questions,
+                        applied_to_new_questions=(payload.application_level == 2 and grade == 4
+                                                  if payload.application_level is not None
+                                                  else payload.applied_to_new_questions),
                         notes=payload.notes)
     db.add(entry)
     try:
@@ -501,6 +527,9 @@ def refresh_session(session_id: int, db: Session = Depends(get_db)):
     }
     entry.status = "closed"
     entry.refreshed_at = utcnow()
+    # Recalibração leve, automática e isolada por matéria e por tipo de item.
+    # O fallback da v0.14 permanece até validação em dados não usados no treino.
+    update_profiles(db, session_id=session_id)
     # Recalcula a fila para a próxima sessão sem zerar eventos anteriores.
     upcoming = build_queue(db)
     summary["next_due_topics"] = upcoming["due_topics"]

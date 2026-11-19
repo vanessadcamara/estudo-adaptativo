@@ -6,13 +6,15 @@ Não é obrigação diária e não impede alternância entre sessões.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from math import exp
+from math import exp, sqrt
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import NewContentLog, Question, QuestionAttempt, Topic, TopicReview, Subject
+from app.assessment import qualifies_as_spaced_success
+from app.statistical_retention import profiles_for_queue, item_estimate, blend_interval
 
 
 def aware(dt: datetime) -> datetime:
@@ -93,45 +95,131 @@ def question_interval(records: list[QuestionAttempt]) -> int:
     return min(60, max(1, base))
 
 
+def retention_observations(records: list[Any], interval_fn, successful) -> list[dict[str, Any]]:
+    """Recuperações observadas após >= 1 dia; nunca inclui estudo inicial.
+
+    O intervalo previsto é computado APENAS com dados disponíveis antes da
+    resposta atual, evitando usar informações do futuro na auditoria.
+    """
+    observations = []
+    for index in range(1, len(records)):
+        previous, current = records[index - 1], records[index]
+        days = elapsed_days(previous.created_at, aware(current.created_at))
+        if days is None or days < 1:
+            continue
+        scheduled = interval_fn(records[:index])
+        observations.append({
+            'actual_days': round(days, 3),
+            'previously_recommended_days': scheduled,
+            'ratio_to_recommendation': days / max(1, scheduled),
+            'success': bool(successful(current)),
+            'structured': (getattr(current, 'recall_level', None) is not None
+                           if isinstance(current, TopicReview) else True),
+        })
+    return observations
+
+
+def wilson_lower(successes: int, total: int) -> float:
+    """Limite inferior de Wilson (95%); não corrige vieses de autoavaliação."""
+    if not total:
+        return 0.0
+    z = 1.959963984540054
+    p = successes / total
+    denominator = 1 + z*z/total
+    return (p + z*z/(2*total) - z*sqrt(p*(1-p)/total + z*z/(4*total*total))) / denominator
+
+
+def retention_interval_validation(records: list[Any], baseline: int, interval_fn,
+                                  successful) -> dict[str, Any]:
+    """Auditoria legível do intervalo real, sem alegar validação científica.
+
+    Compara apenas recuperações aproximadamente similares ao prazo agora
+    proposto; sucessos muito mais curtos não justificam ampliar o intervalo.
+    """
+    observations = retention_observations(records, interval_fn, successful)
+    comparable = [o for o in observations[-30:] if 0.6 * baseline <= o['actual_days'] <= 1.6 * baseline]
+    successes = sum(o['success'] for o in comparable)
+    total = len(comparable)
+    by_days = []
+    for label, low, high in [('1–3', 1, 4), ('4–7', 4, 8), ('8–14', 8, 15),
+                             ('15–30', 15, 31), ('31+', 31, float('inf'))]:
+        entries = [o for o in observations if low <= o['actual_days'] < high]
+        by_days.append({'range': label, 'samples': len(entries),
+                        'successes': sum(o['success'] for o in entries),
+                        'success_percent': round(100 * sum(o['success'] for o in entries) / len(entries), 1)
+                        if entries else None})
+    lower = wilson_lower(successes, total)
+    structured_count = sum(o['structured'] for o in comparable)
+    growth_ready = (total >= 8 and structured_count >= 8 and successes / total >= 0.85
+                    and lower >= 0.70)
+    return {
+        'spaced_samples': len(observations),
+        'structured_spaced_samples': sum(o['structured'] for o in observations),
+        'comparable_samples': total,
+        'comparable_successes': successes,
+        'comparable_structured_samples': structured_count,
+        'comparable_success_percent': round(100 * successes / total, 1) if total else None,
+        'comparable_wilson_lower_percent': round(100 * lower, 1) if total else None,
+        'evidence_sufficient_for_growth': growth_ready,
+        'by_actual_interval': by_days,
+        'note': 'Autoavaliação e amostra selecionada; não é probabilidade validada.',
+    }
+
+
 def observed_retention_interval(records: list[Any], baseline: int, successful,
                                 subject_histories: list[list[Any]] | None = None) -> int:
-    """Conservative interval calibration from *actual elapsed* successful/failed recalls.
+    """Calibração conservadora por tempo *real*, sem extrapolar de intervalos curtos.
 
-    Requires repeated evidence, shrinks sparse topic histories toward subject
-    evidence, and limits changes to 25% of the established spacing schedule.
-    Never treats a single failure as a precise estimate of memory stability.
+    Ampliação de até 25% exige >= 8 recuperações em intervalos comparáveis,
+    com limite inferior de Wilson >= 70%. A condição é uma salvaguarda
+    heurística, não um teste estatístico de memória individual.
+    Insucessos no prazo ou antes dele podem encurtar o próximo intervalo.
+    Informações agregadas da matéria só apoiam reduções, nunca justificam
+    ampliar individualmente um assunto com poucas revisões próprias.
     """
-    def observations(events):
-        samples = []
-        for index in range(1, len(events)):
-            previous, current = events[index - 1], events[index]
-            days = elapsed_days(previous.created_at, aware(current.created_at))
-            if days is None or days < 0.5:
-                continue
-            expected = topic_interval(events[:index]) if isinstance(previous, TopicReview) else question_interval(events[:index])
-            ratio = days / max(1, expected)
-            # A failure before/at the scheduled date signals over-long intervals;
-            # a success at/after the date signals potential headroom.
-            if not successful(current) and ratio <= 1.5:
-                samples.append(-1)
-            elif successful(current) and ratio >= 0.9:
-                samples.append(1)
-        return samples
-
-    local = observations(records)
-    if len(local) >= 6:
-        evidence = local[-20:]
+    if not records:
+        return baseline
+    interval_fn = topic_interval if isinstance(records[0], TopicReview) else question_interval
+    local = retention_observations(records, interval_fn, successful)
+    using_local = len(local) >= 6
+    if using_local:
+        evidence = local[-30:]
         weight = min(1.0, len(evidence) / 12)
     else:
-        pooled = [v for history in (subject_histories or []) for v in observations(history)]
+        pooled = [ob for history in (subject_histories or [])
+                  for ob in retention_observations(history, interval_fn, successful)]
         if len(pooled) < 12:
             return baseline
         evidence = pooled[-100:]
         weight = min(0.5, len(evidence) / 60)
-    signal = sum(evidence) / len(evidence)
-    # Only an imbalance in actual outcomes warrants adjustment.
-    factor = 1 + 0.25 * signal * weight
-    return max(1, min(60, max(round(baseline * 0.75 + 0.000001), min(round(baseline * 1.25), round(baseline * factor)))))
+
+    # A falha antes/próximo ao prazo sugere que a previsão foi otimista.
+    # Falhas muito depois do vencimento não provam que o prazo estava errado.
+    early_failures = sum(not o['success'] and o['ratio_to_recommendation'] <= 1.5
+                         for o in evidence)
+    # Um sucesso em três dias não comprova retenção por trinta.
+    comparable = [o for o in (local[-30:] if using_local else [])
+                  if 0.6 * baseline <= o['actual_days'] <= 1.6 * baseline]
+    successes = sum(o['success'] for o in comparable)
+    # Para ampliar tópicos, evidência de questionário estruturado é obrigatória;
+    # registros antigos continuam úteis para redução e leitura histórica.
+    structured_comparable = (len([o for o in comparable if o['structured']])
+                             if isinstance(records[0], TopicReview) else len(comparable))
+    growth_validated = (len(comparable) >= 8 and structured_comparable >= 8
+                        and successes / len(comparable) >= 0.85
+                        and wilson_lower(successes, len(comparable)) >= 0.70)
+
+    if early_failures >= 3:
+        net = max(0, early_failures - sum(o['success'] and o['ratio_to_recommendation'] >= 0.85
+                                           for o in evidence))
+        if net > 0:
+            factor = 1 - 0.25 * weight * net / max(1, len(evidence))
+            return max(1, min(60, max(round(baseline * 0.75 + 0.000001), round(baseline * factor))))
+
+    if growth_validated:
+        factor = 1 + 0.25 * weight * (successes / len(comparable))
+        return max(1, min(60, round(baseline * factor)))
+    return baseline
 
 
 def forgetting_risk(days: float | None, interval: int, baseline: float) -> float | None:
@@ -437,6 +525,8 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
     for content in new_content:
         latest_study[content.topic_id] = content.created_at
 
+    fsrs_profiles = profiles_for_queue(db)
+
     # Calibração experimental sempre restrita à própria matéria. Nunca usa
     # históricos de Português para alterar prioridades de Matemática.
     topic_subject_histories: dict[int, list[list[TopicReview]]] = defaultdict(list)
@@ -484,14 +574,25 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         if not mastered:
             base_interval = min(30, base_interval)
         interval = observed_retention_interval(
-            history, topic_interval(history),
-            lambda r: r.grade >= 3 and not bool(getattr(r, 'critical_gap', False)),
+            history, base_interval,
+            qualifies_as_spaced_success,
             topic_subject_histories.get(topic.subject_id))
         if not mastered:
             interval = min(30, interval)
+        profile = fsrs_profiles.get(f'topic:{topic.subject_id}')
+        optimized = bool(profile and profile.optimizer_active and profile.optimizer_parameters)
+        active = bool(optimized or (profile and profile.active))
+        estimate = item_estimate(history, 'topic', now,
+                                 factor=1.0 if optimized else (profile.factor if active else 1.0),
+                                 parameters=profile.optimizer_parameters if optimized else None)
+        if estimate is not None:
+            interval = blend_interval(interval, estimate['fsrs_interval_days'], active,
+                                      maximum=60 if mastered else 30)
         overdue_days = max(0.0, days - interval) if days is not None else 0.0
         correction, calibration_samples = topic_adjustments.get(topic.subject_id, (0.0, 0))
         risk = adjusted_risk(topic_forgetting_risk(history, days, interval), correction)
+        if active and estimate is not None:
+            risk = round(100 - estimate['expected_recall_percent'], 1)
         maintenance_required = days is not None and days >= interval
         components = topic_priority_components(topic, history, days, interval)
         priority = round(0.35 * components['D'] + 0.30 * components['T'] +
@@ -520,6 +621,17 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'attempts': len(history), 'days_since': round(days, 1) if days is not None else None,
             'interval_days': interval, 'base_interval_days': base_interval,
             'interval_adjustment_days': interval - base_interval,
+            'retention_model': {
+                'stage': ('otimizado' if optimized else profile.stage) if profile else 'observando',
+                'source': ('FSRS-6 otimizado (21 parâmetros)' if optimized and estimate else
+                           'FSRS calibrado' if active and estimate else 'regras v0.14'),
+                'optimizer': profile.optimizer_metrics if optimized and profile else None,
+                'active': bool(active and estimate),
+                **(estimate or {}),
+                'scope': f'topic:{topic.subject_id}',
+                'validation': profile.metrics if profile else None,
+            },
+            'retention_validation': retention_interval_validation(history, base_interval, topic_interval, qualifies_as_spaced_success),
             'due': maintenance_required,
             'maintenance_required': maintenance_required, 'overdue_days': round(overdue_days, 2),
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
@@ -547,8 +659,18 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         interval = observed_retention_interval(
             history, interval, lambda r: r.is_correct and r.confidence == 3,
             question_subject_histories.get(scope_id))
+        profile = fsrs_profiles.get(f'question:{scope_id}')
+        optimized = bool(profile and profile.optimizer_active and profile.optimizer_parameters)
+        active = bool(optimized or (profile and profile.active))
+        estimate = item_estimate(history, 'question', now,
+                                 factor=1.0 if optimized else (profile.factor if active else 1.0),
+                                 parameters=profile.optimizer_parameters if optimized else None)
+        if estimate is not None:
+            interval = blend_interval(interval, estimate['fsrs_interval_days'], active)
         correction, calibration_samples = question_adjustments.get(scope_id, (0.0, 0))
         risk = adjusted_risk(question_forgetting_risk(history, days, interval), correction)
+        if active and estimate is not None:
+            risk = round(100 - estimate['expected_recall_percent'], 1)
         ratio = days / interval if days is not None else 0.0
         maintenance_required = days is not None and days >= interval
         correct = sum(int(r.is_correct) for r in history)
@@ -594,6 +716,18 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
             'days_since': round(days, 1) if days is not None else None,
             'interval_days': interval, 'base_interval_days': base_interval,
             'interval_adjustment_days': interval - base_interval,
+            'retention_model': {
+                'stage': ('otimizado' if optimized else profile.stage) if profile else 'observando',
+                'source': ('FSRS-6 otimizado (21 parâmetros)' if optimized and estimate else
+                           'FSRS calibrado' if active and estimate else 'regras v0.14'),
+                'optimizer': profile.optimizer_metrics if optimized and profile else None,
+                'active': bool(active and estimate),
+                **(estimate or {}),
+                'scope': f'question:{scope_id}',
+                'validation': profile.metrics if profile else None,
+            },
+            'retention_validation': retention_interval_validation(history, base_interval, question_interval,
+                lambda r: r.is_correct and r.confidence == 3),
             'due': maintenance_required,
             'maintenance_required': maintenance_required,
             'forgetting_risk_percent': risk, 'forgetting_risk_level': risk_level(risk),
@@ -744,5 +878,5 @@ def build_queue(db: Session, now: datetime | None = None, exclude_session_id: in
         'due_topics': sum(x['due'] for x in topic_queue),
         'due_questions': sum(x['due'] for x in question_queue),
         'generated_at': now.isoformat(),
-        'note': 'v0.13: não repetição na sessão; alternância de curto prazo (3 sessões), equilíbrio de longo prazo (12 sessões), proteção de retorno após 7 visitas à matéria sem avaliação do item elegível e calibração conservadora por recuperações espaçadas. Questionário é autoavaliação; resultados de inéditas são por matéria, não por assunto.', 
+        'note': 'v0.15: FSRS-6 oficial em observação, calibração temporal por matéria e ativação condicionada à validação; não repetição na sessão; alternância de 3 e 12 sessões; proteção de retorno após 7 visitas elegíveis; recuperação avaliada antes de conferir e aplicação opcional; calibração extra de intervalos somente com evidência temporal comparável. Não é validação científica; inéditas permanecem por matéria.', 
     }

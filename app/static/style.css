@@ -61,3 +61,8 @@
 .calculation-list dd{font-weight:750;text-align:right;white-space:nowrap}
 .calculation-list small{font-size:11px;color:#7d8aa0}
 @media(max-width:540px){.calculation-list>div{flex-wrap:wrap;gap:2px}}
+
+/* v0.14: duas etapas da avaliação, sem aumentar o número obrigatório de perguntas. */
+.assessment-phase{display:grid;gap:17px}
+.assessment-phase[hidden]{display:none}
+.assessment-phase .question-block{min-width:0}

@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8fc">
-  <title>Estudo Adaptativo BB · v0.13</title>
-  <link rel="stylesheet" href="/static/style.css?v=13">
-  <script src="/static/app.js?v=13" defer></script>
+  <title>Estudo Adaptativo BB · v0.15</title>
+  <link rel="stylesheet" href="/static/style.css?v=15">
+  <script src="/static/app.js?v=15" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -41,6 +41,7 @@
           <button type="button" class="button outline" id="cardsRefresh" title="Encerra a sessão atual e inicia outra, preservando o histórico">Concluir sessão e atualizar fila</button>
           <span class="refresh-info" id="cardsRefreshInfo" aria-live="polite"></span>
         </div>
+        <div id="cardsModelSummary" class="panel-help" aria-live="polite"></div>
         <div id="topicStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando assuntos…</div></div>
       </section>
 
@@ -51,6 +52,7 @@
           <button type="button" class="button outline" id="errorsRefresh" title="Encerra a sessão atual e inicia outra, preservando o histórico">Concluir sessão e atualizar fila</button>
           <span class="refresh-info" id="errorsRefreshInfo" aria-live="polite"></span>
         </div>
+        <div id="errorsModelSummary" class="panel-help" aria-live="polite"></div>
         <div id="semiNovelProgress" class="panel-help" aria-live="polite"></div>
         <div id="questionStudyCard" class="study-region" aria-live="polite"><div class="loading">Carregando questões…</div></div>
         <div class="navigator" aria-label="Navegar entre links">
@@ -108,7 +110,7 @@
         </div>
       </section>
     </main>
-    <footer>Estudo Adaptativo BB · v0.13 · Histórico mantido no PostgreSQL</footer>
+    <footer>Estudo Adaptativo BB · v0.15 · Histórico mantido no PostgreSQL</footer>
   </div>
 
   <dialog class="editor-dialog" id="subjectDialog" aria-labelledby="subjectDialogTitle">
@@ -140,38 +142,48 @@
 
   <dialog class="editor-dialog assessment-dialog" id="reviewDialog" aria-labelledby="reviewDialogTitle">
     <form id="topicFeedback" class="dialog-form"><div class="dialog-top"><div><span class="eyebrow">AVALIAÇÃO DE ASSUNTO</span><h2 id="reviewDialogTitle">Como foi sua revisão?</h2><p id="reviewContext"></p></div><button class="icon-button" type="button" data-close="reviewDialog" aria-label="Fechar">×</button></div>
-      <p class="panel-help">Responda <strong>após tentar explicar o conteúdo sem consultar</strong> e conferir o material. A nota (0–4) será inferida, não escolhida. Isso é autoavaliação, não uma prova objetiva.</p>
-      <fieldset class="question-block"><legend>1. Quanto conseguiu recuperar de memória?</legend><div class="radio-stack">
-        <label class="radio-row"><input type="radio" name="recall_level" value="0" required>Não lembrei</label>
-        <label class="radio-row"><input type="radio" name="recall_level" value="1" required>Lembrei fragmentos</label>
-        <label class="radio-row"><input type="radio" name="recall_level" value="2" required>Recuperei parcialmente</label>
-        <label class="radio-row"><input type="radio" name="recall_level" value="3" required>Recuperei os conceitos principais</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>2. Ao conferir, quão correta estava sua explicação?</legend><div class="radio-stack">
-        <label class="radio-row"><input type="radio" name="accuracy_level" value="0" required>Incorreta</label>
-        <label class="radio-row"><input type="radio" name="accuracy_level" value="1" required>Erros importantes</label>
-        <label class="radio-row"><input type="radio" name="accuracy_level" value="2" required>Pequenas imprecisões</label>
-        <label class="radio-row"><input type="radio" name="accuracy_level" value="3" required>Conceitos essenciais corretos</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>3. Que ajuda precisou durante a recuperação?</legend><div class="radio-stack">
-        <label class="radio-row"><input type="radio" name="assistance_level" value="0" required>Nenhuma</label>
-        <label class="radio-row"><input type="radio" name="assistance_level" value="1" required>Hesitei, sem ajuda externa</label>
-        <label class="radio-row"><input type="radio" name="assistance_level" value="2" required>Precisei de dicas</label>
-        <label class="radio-row"><input type="radio" name="assistance_level" value="3" required>Consultei material ou resolução</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>4. Quais lacunas permaneceram?</legend><div class="radio-grid">
-        <label class="radio-row"><input type="radio" name="gap_level" value="0" required>Nenhuma</label>
-        <label class="radio-row"><input type="radio" name="gap_level" value="1" required>Pequenas</label>
-        <label class="radio-row"><input type="radio" name="gap_level" value="2" required>Moderadas</label>
-        <label class="radio-row"><input type="radio" name="gap_level" value="3" required>Graves</label>
-      </div></fieldset>
-      <fieldset class="question-block"><legend>5. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
-      <fieldset class="question-block"><legend>6. Aplicação (opcional)</legend>
-        <label class="checkbox-row"><input type="checkbox" name="applied_to_new_questions"> Consegui aplicar em questões diferentes sem consultar o material.</label>
-        <p class="panel-help">A nota 4 exige recuperação completa, precisão, ausência de ajuda e de lacunas. Questões inéditas são registradas separadamente, por matéria.</p>
-      </fieldset>
+      <section id="reviewBefore" class="assessment-phase">
+        <p class="panel-help"><strong>Etapa 1 de 2 — antes de consultar qualquer material.</strong> Feche o conteúdo e explique de memória os conceitos essenciais (em voz alta, no papel ou mentalmente). Primeiro registre quanto recuperou e qual ajuda precisou. Só depois clique em “Conferir o material”.</p>
+        <fieldset class="question-block"><legend>1. Quanto conseguiu recuperar de memória, sem olhar?</legend><div class="radio-stack">
+          <label class="radio-row"><input type="radio" name="recall_level" value="0" required>Não consegui lembrar</label>
+          <label class="radio-row"><input type="radio" name="recall_level" value="1" required>Lembrei apenas fragmentos</label>
+          <label class="radio-row"><input type="radio" name="recall_level" value="2" required>Recuperei boa parte, mas faltaram conceitos importantes</label>
+          <label class="radio-row"><input type="radio" name="recall_level" value="3" required>Recuperei os pontos essenciais</label>
+        </div></fieldset>
+        <fieldset class="question-block"><legend>2. Qual ajuda foi necessária para recuperar?</legend><div class="radio-stack">
+          <label class="radio-row"><input type="radio" name="assistance_level" value="0" required>Sem ajuda externa</label>
+          <label class="radio-row"><input type="radio" name="assistance_level" value="1" required>Sem ajuda externa, mas hesitei</label>
+          <label class="radio-row"><input type="radio" name="assistance_level" value="2" required>Precisei de uma dica</label>
+          <label class="radio-row"><input type="radio" name="assistance_level" value="3" required>Consultei material ou resolução</label>
+        </div></fieldset>
+        <p class="panel-help">Se precisou consultar, responda sinceramente. Consultar não é proibido; apenas não comprova recuperação independente.</p>
+        <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Cancelar</button><button id="confirmReviewRecall" type="button" class="button primary">Registrei a recuperação · Conferir material</button></div>
+      </section>
+      <section id="reviewAfter" class="assessment-phase" hidden>
+        <p class="panel-help"><strong>Etapa 2 de 2 — agora confira sua explicação.</strong> Compare com o conteúdo correto e avalie precisão, lacunas e, se testou, aplicação em situação diferente. A nota é inferida; respostas positivas logo após uma aula não são retenção espaçada.</p>
+        <fieldset class="question-block"><legend>3. Depois de conferir, quão precisa foi a resposta?</legend><div class="radio-stack">
+          <label class="radio-row"><input type="radio" name="accuracy_level" value="0" required>Estava conceitualmente incorreta</label>
+          <label class="radio-row"><input type="radio" name="accuracy_level" value="1" required>Havia erros conceituais importantes</label>
+          <label class="radio-row"><input type="radio" name="accuracy_level" value="2" required>Havia somente pequenas imprecisões</label>
+          <label class="radio-row"><input type="radio" name="accuracy_level" value="3" required>Os conceitos essenciais estavam corretos</label>
+        </div></fieldset>
+        <fieldset class="question-block"><legend>4. Quais lacunas permaneceram?</legend><div class="radio-grid">
+          <label class="radio-row"><input type="radio" name="gap_level" value="0" required>Nenhuma</label>
+          <label class="radio-row"><input type="radio" name="gap_level" value="1" required>Pequenas</label>
+          <label class="radio-row"><input type="radio" name="gap_level" value="2" required>Moderadas</label>
+          <label class="radio-row"><input type="radio" name="gap_level" value="3" required>Graves</label>
+        </div></fieldset>
+        <fieldset class="question-block"><legend>5. Esforço para lembrar</legend><div class="radio-grid"><label class="radio-row"><input type="radio" name="difficulty" value="1" required>Fácil</label><label class="radio-row"><input type="radio" name="difficulty" value="2" required>Moderado</label><label class="radio-row"><input type="radio" name="difficulty" value="3" required>Difícil</label></div></fieldset>
+        <fieldset class="question-block"><legend>6. Você testou aplicação em uma questão diferente? (opcional)</legend><div class="radio-stack">
+          <label class="radio-row"><input type="radio" name="application_level" value="not_tested" checked>Não testei nesta revisão</label>
+          <label class="radio-row"><input type="radio" name="application_level" value="0">Testei, mas não consegui aplicar</label>
+          <label class="radio-row"><input type="radio" name="application_level" value="1">Consegui aplicar parcialmente</label>
+          <label class="radio-row"><input type="radio" name="application_level" value="2">Consegui resolver uma questão diferente sem consulta</label>
+        </div>
+        <p class="panel-help">Não testar não reduz a nota. Falha na aplicação limita a nota. Questões inéditas agregadas continuam registradas por matéria, sem atribuição artificial a assuntos.</p></fieldset>
       <label class="field">Observações (opcional)<textarea name="notes" rows="3" maxlength="3000" placeholder="O que precisa reforçar?"></textarea></label>
-      <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Voltar</button><button class="button primary" type="submit">Enviar respostas</button></div>
+      <div class="dialog-actions"><button type="button" class="button outline" data-close="reviewDialog">Cancelar</button><button class="button primary" type="submit">Concluir avaliação da revisão</button></div>
+      </section>
     </form>
   </dialog>
 

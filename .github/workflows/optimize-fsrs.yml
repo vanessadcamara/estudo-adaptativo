@@ -1,0 +1,34 @@
+name: Otimizacao FSRS semanal
+on:
+  workflow_dispatch:
+  schedule:
+    # Domingo 09:00 UTC = 05:00 em Manaus, sem sobrecarregar o Render.
+    - cron: '0 9 * * 0'
+concurrency:
+  group: fsrs-optimizer-production
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  optimize:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      DATABASE_URL: ${{ secrets.FSRS_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check database secret
+        shell: bash
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo 'Configure o segredo FSRS_DATABASE_URL no GitHub Actions antes de ativar a rotina.'
+            exit 1
+          fi
+      - name: Install optimizer outside Render
+        run: python -m pip install -e '.[optimizer]'
+      - name: Optimize and safely promote models
+        run: python -m app.optimize_retention --apply
