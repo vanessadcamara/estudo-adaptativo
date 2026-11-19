@@ -305,10 +305,26 @@ function openQuestion(id=null) {
   $('questionEditorTitle').textContent=q?'Editar questão':'Adicionar questão errada';showDialog('questionEditorDialog');
 }
 async function ensureSession(){if(!state.session)state.session=await api('/sessions','POST');return state.session;}
+const REFRESH_STAMP_KEY='prioritiesRefreshedAt';
+function readRefreshStamp(){try{return localStorage.getItem(REFRESH_STAMP_KEY);}catch(_e){return null;}}
+function saveRefreshStamp(iso){try{localStorage.setItem(REFRESH_STAMP_KEY,iso);}catch(_e){/* armazenamento indisponível: apenas não persiste */}}
+function renderRefreshInfo(){
+  const iso=readRefreshStamp();let text='Prioridades ainda não atualizadas por aqui.';
+  if(iso){
+    const d=new Date(iso);
+    if(!Number.isNaN(d.getTime())){
+      const p=n=>String(n).padStart(2,'0');
+      text=`Última atualização: ${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} às ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+  }
+  for(const id of ['cardsRefreshInfo','errorsRefreshInfo'])$(id).textContent=text;
+}
 async function refresh() {
   if(state.session)await api(`/sessions/${state.session.id}/refresh`,'POST');
   state.session=null;state.skippedTopics.clear();state.reviewedTopics.clear();state.answeredQuestions.clear();state.activeTopicId=null;state.questionIndex=0;
-  await reloadAll({preserveQuestion:false});notice('Prioridades recalculadas. O histórico continua salvo.');
+  await reloadAll({preserveQuestion:false});
+  saveRefreshStamp(new Date().toISOString());renderRefreshInfo();
+  notice('Prioridades recalculadas. O histórico continua salvo.');
 }
 async function afterChange(message) {await reloadAll({preserveQuestion:false});notice(message);}
 async function archive(entity,id,archived){
@@ -430,6 +446,7 @@ $('questionFeedback').addEventListener('submit',event=>{event.preventDefault();s
 });});
 
 resetNovelForm();
+renderRefreshInfo();
 parseRoute();
 safe(async()=>{
   const auth=await api('/auth/me');state.csrf=auth.csrf_token;$('accountName').textContent=auth.username;
