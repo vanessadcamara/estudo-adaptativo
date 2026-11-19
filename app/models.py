@@ -158,7 +158,7 @@ class RetentionModelRun(Base):
     scope: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     session_id: Mapped[int | None] = mapped_column(ForeignKey('study_sessions.id', ondelete='RESTRICT'), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    stage: Mapped[str] = mapped_column(String(20), nullable=False)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False)
     factor: Mapped[float] = mapped_column(nullable=False)
     metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

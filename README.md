@@ -109,6 +109,8 @@ uvicorn app.main:app --reload
 
 Em produção, use `APP_ENV=production`. A configuração `render.yaml` executa `alembic upgrade head` antes de subir a aplicação. As migrações **`0008_v13_assessments.py`** (questionário) e **`0009_v14_application_retention.py`** (resultado opcional de aplicação) e **`0010_v15_fsrs_profiles.py`** (perfis FSRS e trilha de validação) e **`0011_v16_full_fsrs_optimizer.py`** (parâmetros otimizados e auditoria) preservam os registros anteriores; em linhas legadas, o novo campo fica `NULL`. **Faça backup do PostgreSQL antes de aplicar atualizações.**
 
+A migração **`0012_expand_retention_run_stage.py`** amplia o campo de etapa do histórico de otimização. Aguarde a aplicação das migrações no banco de produção antes de executar a rotina semanal de otimização.
+
 O plano gratuito da Render pode suspender o serviço web; isso não apaga automaticamente um banco Neon separado. A persistência real depende do `DATABASE_URL` da aplicação.
 
 ### API principal

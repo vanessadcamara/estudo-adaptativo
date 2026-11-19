@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import sys
 import types
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -154,6 +155,24 @@ def test_dry_run_never_updates_database(monkeypatch):
             full.optimize_profiles(db,dry_run=True)
             assert db.get(RetentionProfile,'question:1') is None
     finally: engine.dispose()
+
+
+@pytest.mark.parametrize('status', ['aguardando', 'sem_melhoria', 'aprovado',
+                                  'rejeitado', 'revertido', 'mantido'])
+def test_optimizer_history_stage_fits_column(monkeypatch, status):
+    monkeypatch.setattr(stat, 'collect_histories', lambda db: {'question:1': histories(count=1, reviews=2)})
+    monkeypatch.setattr(full, 'evaluate_scope', lambda *args, **kwargs: (
+        {'status': status, 'spaced_samples': 1}, None))
+    engine = create_engine('sqlite+pysqlite://', poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            full.optimize_profiles(db, dry_run=False)
+            run = db.scalar(select(RetentionModelRun))
+            assert run.stage == 'otimizador_' + status
+            assert len(run.stage) <= RetentionModelRun.__table__.c.stage.type.length
+    finally:
+        engine.dispose()
 
 
 def test_schedulers_accept_custom_parameters_from_profile(monkeypatch):
